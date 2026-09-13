@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Valheim Server Manager{% endblock %}
+{% block content %}
+<header class="topbar">
+  <h1>Valheim Server Manager</h1>
+  <form method="post" action="/logout" class="inline">
+    <span class="muted">{{ admin_user }}</span>
+    <button type="submit" class="ghost">Sign out</button>
+  </form>
+</header>
+
+<p id="banner" class="banner" role="alert" hidden></p>
+
+<section class="grid">
+  <div class="card">
+    <h2>Status</h2>
+    <p class="status-line">
+      <span id="status-badge" class="badge badge-unknown">connecting…</span>
+      <span id="link-badge" class="badge badge-unknown" title="WebSocket connection">live</span>
+    </p>
+    <p id="status-message" class="muted">Waiting for the first status push…</p>
+    <dl class="kv">
+      <dt>Container</dt><dd id="meta-container">{{ container_name }}</dd>
+      <dt>Image</dt><dd id="meta-image">{{ image }}</dd>
+      <dt>Docker state</dt><dd id="meta-state">–</dd>
+      <dt>Started</dt><dd id="meta-started">–</dd>
+    </dl>
+    <div class="controls">
+      <button id="btn-start" class="primary" disabled>Start</button>
+      <button id="btn-stop" class="danger" disabled>Stop</button>
+      <button id="btn-restart" class="ghost" disabled>Restart</button>
+      <button id="btn-force" class="danger" hidden>Force stop</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>
+      Current settings
+      <button id="btn-settings-edit" class="ghost small" disabled>Edit</button>
+    </h2>
+    {% if settings_error %}
+      <p class="banner banner-error">{{ settings_error }}</p>
+    {% endif %}
+    {# Filled in by app.js with the reason, and only while the server is not off. A
+       live region: the reason arrives from a status push, not from a page load, so a
+       screen reader would otherwise never hear why Edit went away. #}
+    <p id="settings-locked" class="muted small" role="status" aria-live="polite" hidden></p>
+    <p class="muted" id="settings-help">
+      The values in <code>settings/valheim.env</code> right now. They can be edited
+      while the server is off: saving writes the file and removes the stopped
+      container, so the next <strong>Start</strong> builds a new one with the new
+      values &mdash; an existing container keeps the environment it was created with,
+      which is why Start or Restart on their own would keep the old settings. Your
+      world, your backups and the server install live in the
+      <code>{{ config_volume }}</code> and <code>{{ data_volume }}</code> volumes and
+      are not touched by any of this.
+    </p>
+    <table class="settings" id="settings-table">
+      <tbody>
+      {% for row in settings_rows %}
+        <tr><th scope="row">{{ row.key }}</th><td>{{ row.value }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    {# Prefilled from the last status push when Edit is pressed, so it always opens on
+       the values the file holds now rather than on page-load values. #}
+    <form id="settings-form" class="settings-form" autocomplete="off"
+          data-mask="{{ mask }}" hidden>
+      <label for="field-SERVER_NAME">Server name</label>
+      <input id="field-SERVER_NAME" name="SERVER_NAME" type="text" required>
+
+      <label for="field-WORLD_NAME">World name</label>
+      <input id="field-WORLD_NAME" name="WORLD_NAME" type="text" required>
+      <p class="muted small">
+        The save file name under <code>/config/worlds_local</code>, so no slashes.
+        Pointing it at a name that does not exist yet makes the next Start generate a
+        <em>new</em> world rather than changing the old one, which stays on the volume.
+      </p>
+
+      <label for="field-SERVER_PASS">Join password</label>
+      <input id="field-SERVER_PASS" name="SERVER_PASS" type="text" required
+             minlength="{{ min_server_pass_length }}" spellcheck="false">
+      <p class="muted small">
+        Shown masked: leave <code>{{ mask }}</code> exactly as it is to keep the current
+        password. Replace it to change it &mdash; at least {{ min_server_pass_length }}
+        characters, and it cannot appear inside the server name.
+      </p>
+
+      <label for="field-SERVER_PORT">Game port (UDP)</label>
+      <input id="field-SERVER_PORT" name="SERVER_PORT" type="number" min="1" max="65533">
+      <p class="muted small">The query port (+1) and crossplay port (+2) follow it.</p>
+
+      <label class="check">
+        <input id="field-SERVER_PUBLIC" name="SERVER_PUBLIC" type="checkbox">
+        List in the public community server browser
+      </label>
+      <label class="check">
+        <input id="field-CROSSPLAY" name="CROSSPLAY" type="checkbox">
+        Allow Xbox / Game Pass players (crossplay)
+      </label>
+
+      {# The modifier controls. Rendered from app/modifiers.py: the options are its
+         vocabulary, and the categories come out in its own order, because the preview
+         below walks these controls in document order to build the string. #}
+      <fieldset class="modifiers" id="modifier-fields">
+        <legend>World modifiers</legend>
+        <p class="muted small">
+          Valheim's own difficulty rules, written as launch arguments to
+          <code>SERVER_ARGS</code>. They change the rules the server plays by &mdash;
+          they never alter or migrate your existing world &mdash; and they take effect
+          when the next <strong>Start</strong> creates the container, exactly like
+          every other value here. Leave a row on its default to leave that argument
+          out altogether, which is how Valheim's default is kept.
+        </p>
+
+        <label for="field-modifier-preset">{{ modifier_labels["preset"] }}</label>
+        <select id="field-modifier-preset" data-modifier-field="preset">
+          <option value="">normal &mdash; the default (no argument written)</option>
+          {% for value in modifier_presets if value != "normal" %}
+          <option value="{{ value }}">{{ value }}</option>
+          {% endfor %}
+        </select>
+        <p class="muted small">
+          A preset sets every category at once, so it is written first: Valheim applies
+          these arguments in order and a preset after a category would flatten it back.
+        </p>
+
+        {% for category, values in modifier_categories.items() %}
+        <label for="field-modifier-{{ category }}">{{ modifier_labels[category] }}</label>
+        <select id="field-modifier-{{ category }}" data-modifier-field="{{ category }}">
+          <option value="">normal &mdash; the default (no argument written)</option>
+          {% for value in values if value != "normal" %}
+          <option value="{{ value }}">{{ value }}</option>
+          {% endfor %}
+        </select>
+        {% endfor %}
+
+        {% for toggle in modifier_toggles %}
+        <label class="check">
+          <input id="field-modifier-{{ toggle }}" type="checkbox"
+                 data-modifier-toggle="{{ toggle }}">
+          {{ modifier_labels[toggle] }} (<code>-setkey {{ toggle }}</code>)
+        </label>
+        {% endfor %}
+
+        <p class="muted small" id="modifier-preview-label">
+          Written to <code>SERVER_ARGS</code> exactly as shown:
+        </p>
+        <output id="modifier-preview" class="snippet"
+                aria-labelledby="modifier-preview-label" aria-live="polite"></output>
+        <p class="muted small" id="modifier-unmanaged-note" hidden></p>
+      </fieldset>
+
+      <p class="muted small">
+        Only these keys are written. Every comment, blank line and any other key in the
+        file &mdash; <code>TZ</code>, <code>BACKUPS</code>, whatever you added by hand
+        &mdash; is left exactly as it is.
+      </p>
+
+      <div class="controls">
+        <button type="submit" id="btn-settings-save" class="primary">Save</button>
+        <button type="button" id="btn-settings-cancel" class="ghost">Cancel</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="card console-card">
+  <h2>
+    Live console
+    <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
+    <button id="btn-clear" class="ghost small">Clear</button>
+  </h2>
+  <pre id="console" class="console" aria-live="polite"></pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/app.js" defer></script>
+{% endblock %}

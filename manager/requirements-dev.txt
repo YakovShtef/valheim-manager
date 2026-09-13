@@ -1,0 +1,9 @@
+# Test-only dependencies. NOT installed into the runtime image: the suite reads
+# repo-root files (valheim.env.example, docker-compose.yml) that are outside the
+# ./manager build context, so it is run from a checkout, not from the container.
+#
+#   python -m pip install -r manager/requirements-dev.txt
+#   cd manager && python -m pytest
+-r requirements.txt
+pytest==8.3.4
+httpx==0.28.1

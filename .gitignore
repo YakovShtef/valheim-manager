@@ -1,0 +1,17 @@
+# Local configuration -- never commit these.
+# Comments must be on their own line: git treats a trailing `#` as part of the
+# pattern, so `.env  # knobs` matches nothing and silently commits the secret.
+
+# Compose knobs (optional)
+.env
+# admin hash + session secret -- optional override; the setup wizard writes its own
+# to the valheim-manager-state volume instead
+manager.env
+# the settings directory the manager owns, holding valheim.env with SERVER_PASS in it
+/settings/
+# a hand-placed settings file from an older layout
+valheim.env
+
+__pycache__/
+*.pyc
+.pytest_cache/

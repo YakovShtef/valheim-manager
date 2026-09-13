@@ -1,0 +1,193 @@
+:root {
+  color-scheme: dark;
+  --bg: #14171c;
+  --panel: #1c2027;
+  --panel-2: #232833;
+  --line: #2e3541;
+  --ink: #e7ebf0;
+  --muted: #9aa4b2;
+  --accent: #7cc4a4;
+  --accent-ink: #0f1a15;
+  --danger: #e07a6a;
+  --warn: #e3b341;
+  --ok: #6fbf8b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.shell { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.topbar h1 { font-size: 20px; margin: 0; }
+.inline { display: flex; align-items: center; gap: 10px; margin: 0; }
+
+h2 { font-size: 15px; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; display: flex; align-items: center; gap: 12px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  margin-top: 18px;
+}
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid > .card { margin-top: 0; }
+@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+
+.muted { color: var(--muted); }
+
+.status-line { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.badge-ready { background: rgba(111,191,139,.16); color: var(--ok); border-color: rgba(111,191,139,.45); }
+.badge-running { background: rgba(227,179,65,.16); color: var(--warn); border-color: rgba(227,179,65,.45); }
+.badge-busy { background: rgba(124,196,164,.14); color: var(--accent); border-color: rgba(124,196,164,.4); }
+.badge-stopped { background: var(--panel-2); color: var(--muted); }
+.badge-error { background: rgba(224,122,106,.16); color: var(--danger); border-color: rgba(224,122,106,.45); }
+.badge-unknown { opacity: .7; }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 14px 0 0; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+
+button {
+  font: inherit;
+  padding: 8px 16px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: #3d4655; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+button.danger { background: transparent; color: var(--danger); border-color: rgba(224,122,106,.5); }
+button.ghost { background: transparent; }
+button.small { padding: 4px 10px; font-size: 12px; margin-left: auto; }
+
+.banner { padding: 10px 14px; border-radius: 8px; margin: 16px 0 0; border: 1px solid var(--line); background: var(--panel-2); }
+.banner-error { border-color: rgba(224,122,106,.5); background: rgba(224,122,106,.12); color: #f3b6ab; }
+
+.settings { width: 100%; border-collapse: collapse; font-size: 13px; }
+.settings th, .settings td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.settings th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.settings td { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+
+/* the settings editor, shown in place of the read-only table */
+.settings-form { display: grid; gap: 6px; margin: 4px 0 0; }
+/* A class selector beats the UA stylesheet's `[hidden] { display: none }`, so the
+   closed editor would otherwise sit open under the table. The table is toggled the
+   same way, so it gets the same guard before some future `display` rule on .settings
+   leaves both views stacked. */
+.settings-form[hidden] { display: none; }
+#settings-table[hidden] { display: none; }
+.settings-form label { font-size: 12px; color: var(--muted); }
+.settings-form p.small { font-size: 12px; margin: 2px 0 6px; }
+.settings-form .check {
+  display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--ink);
+}
+.settings-form .controls { margin-top: 6px; }
+
+/* the world-modifier block inside the editor */
+.settings-form fieldset.modifiers {
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px 14px;
+  margin: 10px 0 4px; display: grid; gap: 6px;
+}
+.settings-form fieldset.modifiers legend {
+  font-size: 12px; color: var(--muted); padding: 0 4px;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.settings-form fieldset.modifiers code { font-size: 11px; }
+.settings-form select {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+}
+/* An <output> is inline by default, so an empty one would collapse to nothing. */
+#modifier-preview { display: block; margin: 0; overflow-wrap: anywhere; }
+#modifier-preview.is-empty { color: var(--muted); }
+
+.console-card h2 { margin-bottom: 10px; }
+.follow { font-size: 12px; text-transform: none; letter-spacing: 0; display: flex; align-items: center; gap: 6px; }
+
+.console {
+  margin: 0;
+  height: 60vh;
+  min-height: 280px;
+  overflow: auto;
+  background: #0f1216;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.console .sys { color: var(--accent); }
+.console .ready { color: var(--ok); font-weight: 600; }
+
+/* login + first-run setup */
+.login-card { max-width: 380px; margin: 12vh auto 0; }
+.setup-card { max-width: 560px; margin: 6vh auto 0; }
+.login-card h1, .setup-card h1 { font-size: 20px; margin: 0 0 4px; }
+.login-card form, .setup-card form { display: grid; gap: 6px; margin-top: 18px; }
+.login-card label, .setup-card label { font-size: 12px; color: var(--muted); }
+.login-card input,
+.setup-card input[type="text"],
+.setup-card input[type="password"],
+.setup-card input[type="number"],
+.settings-form input[type="text"],
+.settings-form input[type="number"] {
+  font: inherit;
+  padding: 9px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+}
+.login-card button, .setup-card button { margin-top: 12px; }
+
+.setup-card h2 { margin: 22px 0 2px; }
+.setup-card p.small { font-size: 12px; margin: 2px 0 8px; }
+.setup-card .check, .setup-card .radio {
+  display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--ink);
+}
+.setup-card .algo {
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 8px 0 0;
+  display: grid; gap: 8px;
+}
+.setup-card .algo legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.snippet {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: #0f1216;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-x: auto;
+}

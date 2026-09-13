@@ -1,0 +1,214 @@
+# Valheim dedicated server + login-gated manager WebUI.
+#
+#   docker compose up -d                  # nothing to copy, nothing to edit
+#   docker compose logs manager           # copy the one-time setup URL it prints
+#   open that URL                         # create the admin account, press Start
+#
+# There are no required configuration files. The manager boots unconfigured, writes
+# a default ./settings/valheim.env, and prints a first-run setup URL; the wizard
+# creates the admin account, generates the manager's own session secret, and stores
+# both on the `valheim-manager-state` volume at mode 0600. `.env`, `manager.env` and
+# a hand-written settings file are all optional overrides -- see manager/.env.example.
+#
+# Requires Docker Compose v2.30.0 or newer (`env_file` + `format: raw`).
+#
+# The `valheim` service sits behind the `server` profile on purpose: the manager
+# owns the game container's lifecycle (pull / create / start / stop) so the UI can
+# report each phase. `docker compose up -d` therefore brings up only the manager
+# and its scoped Docker socket proxy.
+name: valheim-manager
+
+services:
+  # ---------------------------------------------------------------- game server
+  # Unmodified upstream image, configured only through its documented env vars and
+  # volumes. Definition kept here as the canonical shape of the container the
+  # manager creates; see README "Two ways to run the game container".
+  valheim:
+    image: ${VALHEIM_IMAGE:-ghcr.io/community-valheim-tools/valheim-server:latest}
+    container_name: ${VALHEIM_CONTAINER_NAME:-valheim-server}
+    profiles: ["server"]
+    restart: ${VALHEIM_RESTART_POLICY:-unless-stopped}
+    stop_grace_period: ${VALHEIM_STOP_TIMEOUT:-120}s
+    cap_add:
+      - sys_nice
+    env_file:
+      # The manager writes this file on its first boot, so on a clean tree it does
+      # not exist yet -- `required: false` keeps `docker compose config` valid until
+      # then. Only the `--profile server` escape hatch reads it; the manager passes
+      # these values to the game container itself when it creates it.
+      - path: ${VALHEIM_SETTINGS_DIR:-./settings}/valheim.env
+        required: false
+    ports:
+      # Game port, Steam query port, and the crossplay backend port.
+      - "${VALHEIM_PORTS:-2456-2458:2456-2458/udp}"
+    volumes:
+      - valheim-config:/config
+      - valheim-data:/opt/valheim
+    networks:
+      - frontend
+    logging:
+      # The manager reads this log to detect readiness and to feed the console, and
+      # Docker's default json-file driver has NO size limit -- a server left running
+      # for months would otherwise grow one unbounded file on the host.
+      driver: json-file
+      options:
+        max-size: ${VALHEIM_LOG_MAX_SIZE:-20m}
+        max-file: "${VALHEIM_LOG_MAX_FILES:-5}"
+
+  # --------------------------------------------------------- scoped socket proxy
+  # The ONLY service that touches /var/run/docker.sock. Everything not needed by
+  # the manager is explicitly revoked, including the API sections that would allow
+  # container escape (EXEC, BUILD, SWARM, SECRETS, ...).
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: valheim-docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      # --- granted: exactly what the manager calls -------------------------
+      CONTAINERS: 1        # inspect / create / remove / logs
+      IMAGES: 1            # image inspect + pull on first run
+      POST: 1              # allow write methods at all
+      ALLOW_START: 1       # POST /containers/{id}/start
+      ALLOW_STOP: 1        # POST /containers/{id}/stop
+      ALLOW_RESTARTS: 1    # stop|restart|kill (force stop)
+      # --- revoked (0 overrides this image's defaults where they differ) ---
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      CONFIGS: 0
+      DISTRIBUTION: 0
+      EVENTS: 0
+      EXEC: 0
+      GRPC: 0
+      INFO: 0
+      NETWORKS: 0
+      NODES: 0
+      PLUGINS: 0
+      SECRETS: 0
+      SERVICES: 0
+      SESSION: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      VOLUMES: 0
+      ALLOW_PAUSE: 0
+      ALLOW_UNPAUSE: 0
+      # PING and VERSION stay granted: the Docker SDK negotiates the API version
+      # on connect and cannot work without them.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      # Internal-only: unreachable from the host and from the game container.
+      - docker-proxy
+    # This container holds the socket, so it is the one place a privilege escalation
+    # would be worth most. haproxy here binds 2375, an unprivileged port, and needs
+    # no capabilities at all.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # ------------------------------------------------------------------- manager
+  manager:
+    build: ./manager
+    image: valheim-manager:local
+    container_name: valheim-manager
+    restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy
+    # The uid/gid the manager runs as. It owns /srv/state (the credential volume)
+    # and has to be able to write the mounted settings directory. Change this only
+    # if a bind-mounted ./settings on a native Linux host belongs to another uid --
+    # and then delete the valheim-manager-state volume first, since it is
+    # initialised for 10001.
+    user: "${MANAGER_UID:-10001}:${MANAGER_GID:-10001}"
+    # Optional override, and the only reason this file is loaded with `format: raw`:
+    # ADMIN_USER / ADMIN_PASSWORD_HASH / SESSION_SECRET set here skip first-run setup
+    # entirely. Compose interpolates `$` in the compose file and in a default-format
+    # env_file, which silently truncates every bcrypt (`$2b$12$...`) and argon2
+    # (`$argon2id$v=19$...`) hash at the second `$`; raw format is the only loader
+    # that passes the value through untouched (Compose v2.30.0+), and it keeps quotes
+    # as part of the value, so values there must be bare. Do not re-add those three
+    # keys to `environment:` below: it wins over env_file.
+    # Leave the file absent and the setup wizard handles all three for you.
+    env_file:
+      - path: ${MANAGER_ENV_FILE:-./manager.env}
+        format: raw
+        required: false
+    environment:
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      SESSION_MAX_AGE_SECONDS: ${SESSION_MAX_AGE_SECONDS:-604800}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      VALHEIM_CONTAINER_NAME: ${VALHEIM_CONTAINER_NAME:-valheim-server}
+      VALHEIM_IMAGE: ${VALHEIM_IMAGE:-ghcr.io/community-valheim-tools/valheim-server:latest}
+      VALHEIM_NETWORK: valheim-mgr-frontend
+      VALHEIM_CONFIG_VOLUME: valheim-config
+      VALHEIM_DATA_VOLUME: valheim-data
+      VALHEIM_RESTART_POLICY: ${VALHEIM_RESTART_POLICY:-unless-stopped}
+      VALHEIM_STOP_TIMEOUT: ${VALHEIM_STOP_TIMEOUT:-120}
+      # Paths *inside* the manager container. The settings directory is bind-mounted
+      # from the host (VALHEIM_SETTINGS_DIR); the state file lives on a named volume.
+      VALHEIM_ENV_FILE: /srv/settings/valheim.env
+      MANAGER_STATE_FILE: /srv/state/manager-state.json
+      # Only used to print a ready-to-click first-run setup URL, e.g.
+      # http://valheim.lan:8080 -- the manager never calls itself.
+      MANAGER_URL: ${MANAGER_URL:-}
+      READY_LOG_PATTERN: ${READY_LOG_PATTERN:-}
+      LOG_TAIL_LINES: ${LOG_TAIL_LINES:-200}
+      LOG_POLL_SECONDS: ${LOG_POLL_SECONDS:-1.0}
+      STATUS_EVERY_N_POLLS: ${STATUS_EVERY_N_POLLS:-2}
+    ports:
+      # 0.0.0.0 publishes on EVERY interface the host has. Behind home NAT that
+      # means the LAN only; on a VPS or any host with a routable address it is
+      # public immediately, and this login has no rate limiting. Set
+      # MANAGER_BIND=127.0.0.1 there and tunnel in. See README "Security notes".
+      - "${MANAGER_BIND:-0.0.0.0}:${MANAGER_PORT:-8080}:8080"
+    volumes:
+      # The settings *directory*, read-write. A directory rather than a single file
+      # on purpose: Docker turns a missing bind-mount source into a directory, and a
+      # settings *file* that became a directory was a trap worth retiring. The
+      # manager creates valheim.env inside it on first boot and never overwrites one
+      # that already exists.
+      - ${VALHEIM_SETTINGS_DIR:-./settings}:/srv/settings
+      # The manager's own credentials (admin user, password hash, session secret) at
+      # mode 0600. A named volume, not a bind mount: nothing else should read it, and
+      # it is initialised with the image's ownership so it is writable out of the box.
+      - valheim-manager-state:/srv/state
+    networks:
+      - frontend
+      - docker-proxy
+    # Nothing here needs a capability: it binds 8080 and talks HTTP to the proxy. The
+    # first-boot admin-creation path and create-container rights through the proxy are
+    # exactly why this service should be able to gain nothing beyond them.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      # /healthz answers while the manager is still awaiting first-run setup -- a
+      # manager with no admin yet is running correctly, and saying otherwise would be
+      # a lie that shows as `(unhealthy)` in `docker ps`, holds up anything gated on
+      # `depends_on: condition: service_healthy`, and sends the operator hunting a
+      # fault instead of reading the setup URL. (Nothing restarts on health alone:
+      # Engine and Compose act on process exit, not health status.)
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request;urllib.request.urlopen("http://127.0.0.1:8080/healthz",timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  frontend:
+    name: valheim-mgr-frontend
+  docker-proxy:
+    name: valheim-mgr-docker-proxy
+    internal: true
+
+volumes:
+  valheim-config:
+    name: valheim-config
+  valheim-data:
+    name: valheim-data
+  valheim-manager-state:
+    name: valheim-manager-state
