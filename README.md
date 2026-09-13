@@ -303,6 +303,51 @@ complete document refuses the boot and names itself — it never degrades into
 "unconfigured", which would reopen admin creation on a manager that already has an
 admin.
 
+## Deploying on a Linux server (CasaOS, Debian, a NAS)
+
+This stack **builds the manager image from source**, so the server needs the repo —
+not just a compose file. That rules out pasting a compose into CasaOS's "Custom
+Install" box, which expects prebuilt images. Clone and bring it up over SSH instead;
+CasaOS lists the running containers afterwards either way.
+
+```bash
+sudo apt install -y git
+git clone <your-repo-url> valheim-manager
+cd valheim-manager
+```
+
+**Check Compose first.** The optional `manager.env` path uses `env_file: format: raw`,
+which needs Compose **v2.30.0+**:
+
+```bash
+docker compose version
+```
+
+If yours is older, either upgrade Docker or delete the four `env_file:` lines under
+the `manager` service — the setup wizard writes credentials to a volume, so that block
+exists only for the advanced path below.
+
+**Then the one Linux-only step.** Docker creates a missing bind-mount source as
+`root`, and the manager runs as uid 10001, so it cannot write its settings file unless
+the directory exists and belongs to it:
+
+```bash
+mkdir -p settings && sudo chown -R 10001:10001 settings
+docker compose up -d
+docker compose logs manager      # copy the one-time setup URL
+```
+
+Docker Desktop on Windows and macOS does not need this; native Linux does.
+
+**Reaching it.** The UI listens on port 8080 and binds every interface. CasaOS itself
+uses port 80, so there is no clash, but if 8080 is taken put `MANAGER_PORT=8099` (or
+anything free) in a `.env` beside the compose file. Players need UDP **2456-2458**
+forwarded to this machine; the web UI port should *not* be forwarded — reach it over
+your LAN, a VPN, or Tailscale.
+
+**If the socket proxy exits immediately**, see [If the socket proxy will not
+start](#if-the-socket-proxy-will-not-start) — one capability line is the likely cause.
+
 ## Two ways to run the game container
 
 The manager owns the game container. `docker-compose.yml` also defines the
