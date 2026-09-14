@@ -397,6 +397,34 @@ def test_first_run_pulls_creates_and_starts(stack):
     assert status["ready"] is False
 
 
+def test_create_kwargs_are_all_accepted_by_the_real_docker_library(stack):
+    """The fake engine takes any kwarg; docker-py does not.
+
+    ``containers.create`` validates its arguments against the model layer's own
+    allow-lists and raises ``run() got an unexpected keyword argument ...`` before
+    any request reaches the daemon. ``stop_timeout`` was exactly that trap: the
+    Engine API accepts it, the model layer does not, and the whole suite stayed
+    green while the first real Start failed. This pins every kwarg we send against
+    the installed library rather than against the fake.
+    """
+    from docker.models.containers import RUN_CREATE_KWARGS, RUN_HOST_CONFIG_KWARGS
+
+    control, docker = stack["control"], stack["docker"]
+    control.start()
+    created = dict(docker.containers.create_calls[0])
+    created.pop("image")  # passed positionally, not as a kwarg
+
+    # docker-py pops these out of kwargs itself before its allow-list check.
+    handled_separately = {"ports", "volumes", "network", "networking_config"}
+    accepted = set(RUN_CREATE_KWARGS) | set(RUN_HOST_CONFIG_KWARGS) | handled_separately
+
+    rejected = sorted(set(created) - accepted)
+    assert not rejected, (
+        f"containers.create() would raise on {rejected}: the installed docker-py does "
+        "not accept these. Check RUN_CREATE_KWARGS / RUN_HOST_CONFIG_KWARGS."
+    )
+
+
 def test_first_run_skips_pull_when_image_already_present(env_file):
     docker = FakeDockerClient(images={IMAGE})
     config = build_config(env_file)
@@ -1265,9 +1293,13 @@ def test_create_call_carries_the_whole_container_spec(stack):
     assert created["restart_policy"] == {"Name": "unless-stopped"}
     assert created["network"] == "test-net"
     assert created["cap_add"] == ["sys_nice"]
-    assert created["stop_timeout"] == 7
     assert created["tty"] is False
     assert created["labels"] == {"com.valheim-manager.managed": "true"}
+    # Deliberately NOT stop_timeout: docker-py's model layer rejects it outright
+    # (see test_create_kwargs_are_all_accepted_by_the_real_docker_library). The
+    # grace period is applied by stop() instead, which is asserted separately in
+    # test_graceful_stop_uses_the_configured_timeout.
+    assert "stop_timeout" not in created
 
 
 def test_restart_policy_no_is_passed_as_no_policy(env_file, fake_docker):

@@ -437,6 +437,13 @@ class DockerControl:
             {"Name": self.restart_policy} if self.restart_policy and self.restart_policy != "no" else None
         )
         try:
+            # No `stop_timeout=` here. The Engine accepts it, but docker-py's *model*
+            # layer does not: it validates kwargs against RUN_CREATE_KWARGS /
+            # RUN_HOST_CONFIG_KWARGS and raises "run() got an unexpected keyword
+            # argument 'stop_timeout'" before any request is sent. Nothing is lost --
+            # `stop()` passes `timeout=self.stop_timeout` on every call, so the grace
+            # period this manager uses is unchanged. It only means a *manual*
+            # `docker stop valheim-server` gets the Engine's 10s default instead.
             return self.client().containers.create(
                 self.image,
                 name=self.container_name,
@@ -445,7 +452,6 @@ class DockerControl:
                 volumes=volumes,
                 cap_add=self.cap_add,
                 restart_policy=restart_policy,
-                stop_timeout=self.stop_timeout,
                 network=self.network,
                 labels={MANAGED_LABEL: "true"},
                 tty=False,
