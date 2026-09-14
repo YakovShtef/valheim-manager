@@ -114,12 +114,20 @@ services:
     restart: unless-stopped
     depends_on:
       - docker-socket-proxy
-    # The uid/gid the manager runs as. It owns /srv/state (the credential volume)
-    # and has to be able to write the mounted settings directory. Change this only
-    # if a bind-mounted ./settings on a native Linux host belongs to another uid --
-    # and then delete the valheim-manager-state volume first, since it is
-    # initialised for 10001.
-    user: "${MANAGER_UID:-10001}:${MANAGER_GID:-10001}"
+    # The uid/gid the manager runs as. The uid owns /srv/state (the credential volume)
+    # and has to be able to write the mounted settings directory.
+    #
+    # The GROUP is the game server's, not the manager's own: uploaded worlds have to
+    # end up writable by the game, which runs as PUID:PGID (1000) and saves to them
+    # continuously, and the manager cannot chown what it writes -- `cap_drop: [ALL]`
+    # removes CAP_CHOWN, and it is not root anyway. Sharing the group and writing
+    # worlds group-writable is what lets both services write the same files while
+    # keeping one uid each. Keep MANAGER_GID equal to PGID in settings/valheim.env.
+    #
+    # Change the uid only if a bind-mounted ./settings on a native Linux host belongs
+    # to another one -- and then delete the valheim-manager-state volume first, since
+    # it is initialised for 10001.
+    user: "${MANAGER_UID:-10001}:${MANAGER_GID:-1000}"
     # Optional override, and the only reason this file is loaded with `format: raw`:
     # ADMIN_USER / ADMIN_PASSWORD_HASH / SESSION_SECRET set here skip first-run setup
     # entirely. Compose interpolates `$` in the compose file and in a default-format
@@ -149,6 +157,19 @@ services:
       # from the host (VALHEIM_SETTINGS_DIR); the state file lives on a named volume.
       VALHEIM_ENV_FILE: /srv/settings/valheim.env
       MANAGER_STATE_FILE: /srv/state/manager-state.json
+      # The worlds the Worlds panel lists, switches between and uploads into, on the
+      # game's own config volume (mounted below). The game container sees the same
+      # path; its mount is unchanged.
+      VALHEIM_WORLDS_DIR: /config/worlds_local
+      # Largest world one upload may carry, in whole megabytes. A long-played world
+      # runs to a few hundred MB of chunks; past this the upload is refused before
+      # anything is written.
+      WORLD_UPLOAD_MAX_MB: ${WORLD_UPLOAD_MAX_MB:-1024}
+      # ...and how many files one upload may carry. A 1.0 world is one file per visited
+      # map chunk, so a dropped folder is routinely thousands of them -- far past the
+      # 1000 a multipart parser allows by default. A .zip is one file whatever the
+      # world's size, which is the way round this for a very large world.
+      WORLD_UPLOAD_MAX_FILES: ${WORLD_UPLOAD_MAX_FILES:-5000}
       # Only used to print a ready-to-click first-run setup URL, e.g.
       # http://valheim.lan:8080 -- the manager never calls itself.
       MANAGER_URL: ${MANAGER_URL:-}
@@ -173,6 +194,14 @@ services:
       # mode 0600. A named volume, not a bind mount: nothing else should read it, and
       # it is initialised with the image's ownership so it is writable out of the box.
       - valheim-manager-state:/srv/state
+      # The GAME's config volume, read-write, for /config/worlds_local -- the worlds
+      # the Worlds panel lists, switches between and uploads into. The game container
+      # mounts the same volume at the same path and its mount is unchanged; this one
+      # is what lets the manager see the worlds at all. The worlds directory itself
+      # belongs to the game server: the manager creates it only if /config lets it,
+      # and otherwise says so and points at pressing Start once. It only ever ADDS
+      # worlds, and never deletes one.
+      - valheim-config:/config
     networks:
       - frontend
       - docker-proxy

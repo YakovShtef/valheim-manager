@@ -7,12 +7,16 @@ hard to provoke for real) is covered.
 
 from __future__ import annotations
 
+import io
 import itertools
 import json
 import logging
 import os
+import re
 import stat
 import time
+import zipfile
+from pathlib import Path
 
 import pytest
 import requests
@@ -60,6 +64,16 @@ from app.setup import (
     SetupInputError,
     validated_modifiers,
     validated_settings,
+)
+from app.worlds import (
+    LAYOUT_LEGACY,
+    LAYOUT_MODERN,
+    WORLD_DIR_MODE,
+    WORLD_FILE_MODE,
+    WorldError,
+    WorldStore,
+    human_size,
+    sanitised_name,
 )
 from app.state_store import (
     STATE_MODE,
@@ -3821,3 +3835,1210 @@ def test_saving_a_modifier_writes_it_under_the_documented_comment(tmp_path, fake
     assert "Added by the Valheim manager" not in text
     # The comment block that documents the key is still above it.
     assert text.index("Extra command-line arguments") < text.index("SERVER_ARGS=")
+
+
+# ============================================================== the Worlds panel
+#
+# The spec's world matrix, end to end: listing and classification, switching through
+# the settings path, an upload of each accepted shape, and every refusal -- a lone
+# `.db`, a traversal entry, a name collision, an oversize drop, and any of it while
+# the server is running. What every refusal has to prove is the same thing: that the
+# volume was left exactly as it was found.
+
+
+WORLDS_CAP_BYTES = 2 * 1024 * 1024
+
+
+@pytest.fixture
+def worlds_dir(tmp_path):
+    path = tmp_path / "worlds_local"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def worlds(env_file, fake_docker, worlds_dir):
+    config = build_config(
+        env_file, worlds_dir=str(worlds_dir), world_upload_max_bytes=WORLDS_CAP_BYTES
+    )
+    control = build_control(config, fake_docker)
+    app = create_app(config=config, controller=control, settings=SettingsStore(env_file))
+    return {
+        "app": app,
+        "config": config,
+        "control": control,
+        "docker": fake_docker,
+        "dir": worlds_dir,
+        "env": env_file,
+    }
+
+
+def make_modern_world(root, name: str, *, chunks: int = 2):
+    """A 1.0 world in the layout a live server actually leaves on the volume."""
+    world = root / name
+    world.mkdir()
+    (world / "_main.1.db2").write_bytes(b"world-data" * 8)
+    (world / "_main.1.fwl2").write_bytes(b"meta")
+    (world / "_main.1.chunks").write_bytes(b"index")
+    (world / "_main.1.ok").write_bytes(b"")
+    for index in range(chunks):
+        (world / f"{index}_0.chunk").write_bytes(b"chunk")
+    return world
+
+
+def make_legacy_world(root, name: str) -> None:
+    (root / f"{name}.db").write_bytes(b"legacy-data")
+    (root / f"{name}.fwl").write_bytes(b"legacy-meta")
+
+
+def zip_bytes(entries):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, payload in entries:
+            archive.writestr(name, payload)
+    return buffer.getvalue()
+
+
+def upload_world(client: TestClient, parts, *, name: str = "", origin: str = ORIGIN):
+    """POST a multipart upload. ``parts`` is a list of (filename, bytes) pairs, and the
+    filename is the path within the drop -- exactly what the browser sends."""
+    files = [
+        ("files", (filename, payload, "application/octet-stream"))
+        for filename, payload in parts
+    ]
+    return client.post(
+        "/api/worlds/upload", files=files, data={"name": name}, headers={"Origin": origin}
+    )
+
+
+def switch_world(client: TestClient, name: str, *, origin: str = ORIGIN):
+    return client.post(
+        "/api/worlds/switch", json={"name": name}, headers={"Origin": origin}
+    )
+
+
+def volume_snapshot(root) -> dict:
+    """Every file on the volume with its contents: what a refusal must not change."""
+    snapshot = {}
+    for path in sorted(Path(root).rglob("*")):
+        if path.is_file():
+            snapshot[str(path.relative_to(root)).replace("\\", "/")] = path.read_bytes()
+    return snapshot
+
+
+# ------------------------------------------------------------------- listing
+
+
+def test_worlds_are_listed_with_their_layout_size_and_the_active_one_marked(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    make_legacy_world(worlds["dir"], "Grandfathered")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+
+    rows = {row["name"]: row for row in payload["worlds"]}
+    assert set(rows) == {"Dedicated", "Grandfathered"}
+    assert rows["Dedicated"]["layout"] == "1.0"
+    assert rows["Dedicated"]["legacy"] is False
+    assert rows["Grandfathered"]["layout"] == "legacy"
+    assert rows["Grandfathered"]["legacy"] is True
+    assert rows["Dedicated"]["size_bytes"] > 0
+    assert rows["Dedicated"]["size"]
+    # WORLD_NAME in the settings file is `Dedicated`, so that is the active one.
+    assert payload["active_world"] == "Dedicated"
+    assert rows["Dedicated"]["active"] is True
+    assert rows["Grandfathered"]["active"] is False
+    assert payload["worlds_error"] is None
+    assert payload["max_upload_bytes"] == WORLDS_CAP_BYTES
+
+
+def test_a_directory_that_is_not_a_world_is_not_listed_as_one(worlds):
+    (worlds["dir"] / "not-a-world").mkdir()
+    (worlds["dir"] / "not-a-world" / "readme.txt").write_text("hello", encoding="utf-8")
+    # A half-world: the `.db2` with no `.fwl2` beside it.
+    (worlds["dir"] / "halfway").mkdir()
+    (worlds["dir"] / "halfway" / "_main.1.db2").write_bytes(b"x")
+    # And a lone legacy file, which is not a world either.
+    (worlds["dir"] / "Lonely.db").write_bytes(b"x")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+
+    assert payload["worlds"] == []
+    assert payload["worlds_error"] is None
+
+
+def test_an_empty_volume_says_so_and_the_panel_still_renders(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+        page = client.get("/").text
+
+    assert payload["worlds"] == []
+    assert payload["worlds_error"] is None
+    # The panel's own wording: nothing there yet, and the first Start makes one.
+    assert "No worlds on the volume yet" in page
+    assert "generates one" in page
+
+
+def test_a_worlds_directory_that_cannot_be_read_is_named_not_crashed(
+    env_file, fake_docker, tmp_path
+):
+    """A file where the directory should be: the panel still renders, with the reason."""
+    blocked = tmp_path / "worlds_local_file"
+    blocked.write_text("not a directory", encoding="utf-8")
+    config = build_config(env_file, worlds_dir=str(blocked))
+    app = create_app(
+        config=config,
+        controller=build_control(config, fake_docker),
+        settings=SettingsStore(env_file),
+    )
+    with TestClient(app) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+        assert client.get("/").status_code == 200
+
+    assert payload["worlds"] == []
+    assert str(blocked) in payload["worlds_error"]
+
+
+def test_listing_needs_a_session(worlds):
+    with TestClient(worlds["app"]) as client:
+        assert client.get("/api/worlds").status_code == 401
+
+
+# ------------------------------------------------------------------ switching
+
+
+def test_switching_writes_world_name_and_removes_the_stopped_container(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    make_modern_world(worlds["dir"], "Seedy")
+    container = worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = switch_world(client, "Seedy")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["saved"] is True
+    assert payload["changed"] == ["WORLD_NAME"]
+    assert payload["container_removed"] is True
+    assert container.removed is True
+    assert "WORLD_NAME=Seedy" in worlds["env"].read_text(encoding="utf-8")
+    # The answer carries the refreshed panel, so the list marks the new active world
+    # and the settings table shows the new value without waiting for a status push.
+    assert payload["active_world"] == "Seedy"
+    assert [row["name"] for row in payload["worlds"] if row["active"]] == ["Seedy"]
+    rows = {row["key"]: row["value"] for row in payload["settings"]}
+    assert rows["WORLD_NAME"] == "Seedy"
+
+
+def test_the_next_start_loads_the_switched_world(worlds):
+    make_modern_world(worlds["dir"], "Seedy")
+    worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert switch_world(client, "Seedy").status_code == 200
+        assert client.post("/api/start", headers={"Origin": ORIGIN}).status_code == 200
+
+    created = worlds["docker"].containers.create_calls[-1]
+    assert created["environment"]["WORLD_NAME"] == "Seedy"
+
+
+@pytest.mark.parametrize("state", ["running", "restarting", "paused"])
+def test_switching_is_refused_while_the_server_is_live(worlds, state):
+    make_modern_world(worlds["dir"], "Seedy")
+    container = worlds["docker"].seed_stopped()
+    container.status = state
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = switch_world(client, "Seedy")
+
+    assert response.status_code == 409
+    assert "Stop the server" in response.json()["error"]
+    assert worlds["env"].read_text(encoding="utf-8") == before
+    assert container.removed is False
+
+
+def test_switching_to_a_world_that_is_not_there_is_refused(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = switch_world(client, "Imaginary")
+
+    assert response.status_code == 404
+    assert "Imaginary" in response.json()["error"]
+    assert worlds["env"].read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("name", ["../escape", "a/b", "", ".", "   ", "a\\b", "x\x00y"])
+def test_a_world_name_that_is_not_one_segment_is_refused(worlds, name):
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = switch_world(client, name)
+
+    assert response.status_code == 400, response.text
+    assert worlds["env"].read_text(encoding="utf-8") == before
+
+
+def test_switching_to_the_active_world_writes_nothing_and_keeps_the_container(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    container = worlds["docker"].seed_stopped()
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = switch_world(client, "Dedicated")
+
+    assert response.status_code == 200
+    assert response.json()["changed"] == []
+    assert response.json()["container_removed"] is False
+    assert container.removed is False
+    assert worlds["env"].read_text(encoding="utf-8") == before
+
+
+def test_switching_needs_a_session_and_a_same_origin_post(worlds):
+    make_modern_world(worlds["dir"], "Seedy")
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        assert (
+            client.post(
+                "/api/worlds/switch", json={"name": "Seedy"}, headers={"Origin": ORIGIN}
+            ).status_code
+            == 401
+        )
+        login(client)
+        assert switch_world(client, "Seedy", origin="http://evil.example").status_code == 403
+        assert client.post("/api/worlds/switch", json={"name": "Seedy"}).status_code == 403
+
+    assert worlds["env"].read_text(encoding="utf-8") == before
+
+
+# ------------------------------------------------------------------ uploading
+
+
+def test_a_dropped_1_0_world_folder_is_accepted_and_listed(worlds):
+    parts = [
+        ("Imported/_main.1.db2", b"world-data" * 64),
+        ("Imported/_main.1.fwl2", b"meta"),
+        ("Imported/_main.1.chunks", b"index"),
+        ("Imported/_main.1.ok", b""),
+        ("Imported/0_0.chunk", b"chunk"),
+    ]
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, parts)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["uploaded"] is True
+    assert payload["name"] == "Imported"
+    assert payload["layout"] == "1.0"
+    assert payload["warning"] is None
+    assert [row["name"] for row in payload["worlds"]] == ["Imported"]
+
+    placed = worlds["dir"] / "Imported"
+    assert sorted(path.name for path in placed.iterdir()) == [
+        "0_0.chunk",
+        "_main.1.chunks",
+        "_main.1.db2",
+        "_main.1.fwl2",
+        "_main.1.ok",
+    ]
+    assert (placed / "_main.1.db2").read_bytes() == b"world-data" * 64
+    # And no staging directory left behind.
+    assert [path.name for path in worlds["dir"].iterdir()] == ["Imported"]
+
+
+def test_a_zip_of_a_world_folder_is_accepted(worlds):
+    archive = zip_bytes(
+        [
+            ("Imported/_main.1.db2", b"data"),
+            ("Imported/_main.1.fwl2", b"meta"),
+            ("Imported/_main.1.ok", b""),
+        ]
+    )
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Imported.zip", archive)])
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Imported"
+    assert (worlds["dir"] / "Imported" / "_main.1.db2").read_bytes() == b"data"
+
+
+def test_an_uploaded_world_can_be_switched_to_and_the_next_start_loads_it(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert (
+            upload_world(
+                client,
+                [("Imported/_main.1.db2", b"data"), ("Imported/_main.1.fwl2", b"meta")],
+            ).status_code
+            == 200
+        )
+        assert switch_world(client, "Imported").status_code == 200
+        assert client.post("/api/start", headers={"Origin": ORIGIN}).status_code == 200
+
+    created = worlds["docker"].containers.create_calls[-1]
+    assert created["environment"]["WORLD_NAME"] == "Imported"
+
+
+def test_a_legacy_pair_is_accepted_with_the_conversion_warning(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client, [("Grandfathered.db", b"data"), ("Grandfathered.fwl", b"meta")]
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["layout"] == "legacy"
+    assert payload["name"] == "Grandfathered"
+    # Not a footnote: loading it rewrites it, and there is no way back.
+    assert "permanently" in payload["warning"]
+    assert (worlds["dir"] / "Grandfathered.db").read_bytes() == b"data"
+    assert (worlds["dir"] / "Grandfathered.fwl").read_bytes() == b"meta"
+    assert payload["worlds"][0]["layout"] == "legacy"
+
+
+def test_an_upload_can_be_given_a_different_name(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client,
+            [("Imported/_main.1.db2", b"data"), ("Imported/_main.1.fwl2", b"meta")],
+            name="Renamed",
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Renamed"
+    assert (worlds["dir"] / "Renamed" / "_main.1.db2").is_file()
+    assert not (worlds["dir"] / "Imported").exists()
+
+
+@pytest.mark.parametrize(
+    "parts, expected",
+    [
+        ([("Only/_main.1.db2", b"data")], "_main.N.fwl2"),
+        ([("Only/_main.1.fwl2", b"meta")], "_main.N.db2"),
+        ([("Only/readme.txt", b"hello")], "_main.N.db2"),
+    ],
+)
+def test_an_upload_that_is_not_a_world_is_refused_naming_what_is_missing(
+    worlds, parts, expected
+):
+    before = volume_snapshot(worlds["dir"])
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, parts)
+
+    assert response.status_code == 400, response.text
+    assert expected in response.json()["error"]
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+@pytest.mark.parametrize("lone", ["Grandfathered.db", "Grandfathered.fwl"])
+def test_a_lone_legacy_file_says_both_are_required(worlds, lone):
+    before = volume_snapshot(worlds["dir"])
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [(lone, b"data")])
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert "Grandfathered.db and Grandfathered.fwl" in error
+    missing = ".fwl" if lone.endswith(".db") else ".db"
+    assert f"the {missing} one is missing" in error
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "../escape.db2",
+        "../../etc/passwd",
+        "/etc/passwd",
+        "Imported/../../escape",
+        "C:/Windows/system32/evil",
+        "..\\escape.txt",
+    ],
+)
+def test_an_archive_entry_that_escapes_the_destination_is_refused(worlds, hostile):
+    outside = worlds["dir"].parent
+    before_outside = sorted(path.name for path in outside.iterdir())
+    before = volume_snapshot(worlds["dir"])
+    archive = zip_bytes(
+        [
+            ("Imported/_main.1.db2", b"data"),
+            ("Imported/_main.1.fwl2", b"meta"),
+            (hostile, b"owned"),
+        ]
+    )
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Imported.zip", archive)])
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    # Reported as a rejected upload, not a crash, and nothing written anywhere.
+    assert "Nothing was written" in error
+    assert "outside the world directory" in error
+    assert volume_snapshot(worlds["dir"]) == before
+    assert sorted(path.name for path in outside.iterdir()) == before_outside
+
+
+def test_a_symlink_entry_in_an_archive_is_refused(worlds):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Imported/_main.1.db2", b"data")
+        archive.writestr("Imported/_main.1.fwl2", b"meta")
+        link = zipfile.ZipInfo("Imported/link")
+        link.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(link, b"/etc/passwd")
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Imported.zip", buffer.getvalue())])
+
+    assert response.status_code == 400
+    assert "symbolic link" in response.json()["error"]
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_an_upload_matching_an_existing_world_is_refused_and_leaves_it_alone(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client,
+            [("Dedicated/_main.1.db2", b"overwritten"), ("Dedicated/_main.1.fwl2", b"x")],
+        )
+
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert "'Dedicated'" in error and "already" in error
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_a_collision_with_a_legacy_world_is_refused_too(worlds):
+    make_legacy_world(worlds["dir"], "Grandfathered")
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client, [("Grandfathered.db", b"new"), ("Grandfathered.fwl", b"new")]
+        )
+
+    assert response.status_code == 409
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_an_oversize_upload_is_refused_with_the_cap_in_the_message(worlds):
+    before = volume_snapshot(worlds["dir"])
+    payload = b"x" * (WORLDS_CAP_BYTES + 1024)
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client, [("Big/_main.1.db2", payload), ("Big/_main.1.fwl2", b"meta")]
+        )
+
+    assert response.status_code == 413, response.text
+    error = response.json()["error"]
+    assert "2.0 MB" in error  # the cap, stated
+    assert "WORLD_UPLOAD_MAX_MB" in error
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_an_oversize_body_is_refused_before_it_is_even_read(worlds):
+    """Content-Length alone is enough to refuse, so the body never reaches any disk --
+    not even the temp file the multipart parser would otherwise spool it to."""
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = client.post(
+            "/api/worlds/upload",
+            headers={
+                "Origin": ORIGIN,
+                "Content-Type": "multipart/form-data; boundary=x",
+                "Content-Length": str(WORLDS_CAP_BYTES * 100),
+            },
+            content=b"",
+        )
+
+    assert response.status_code == 413
+    assert "WORLD_UPLOAD_MAX_MB" in response.json()["error"]
+
+
+@pytest.mark.parametrize("state", ["running", "restarting", "paused"])
+def test_uploading_is_refused_while_the_server_is_live(worlds, state):
+    container = worlds["docker"].seed_stopped()
+    container.status = state
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client, [("Imported/_main.1.db2", b"data"), ("Imported/_main.1.fwl2", b"m")]
+        )
+
+    assert response.status_code == 409
+    assert "Stop the server" in response.json()["error"]
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_a_docker_that_cannot_be_reached_refuses_a_world_action(worlds):
+    make_modern_world(worlds["dir"], "Seedy")
+    before = volume_snapshot(worlds["dir"])
+    worlds["docker"].get_error = APIError("boom")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        upload = upload_world(
+            client, [("Imported/_main.1.db2", b"d"), ("Imported/_main.1.fwl2", b"m")]
+        )
+        switch = switch_world(client, "Seedy")
+
+    assert upload.status_code == 502
+    assert switch.status_code == 502
+    assert "could not confirm the server is stopped" in upload.json()["error"]
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_uploading_needs_a_session_and_a_same_origin_post(worlds):
+    parts = [("Imported/_main.1.db2", b"d"), ("Imported/_main.1.fwl2", b"m")]
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        assert upload_world(client, parts).status_code == 401
+        login(client)
+        assert upload_world(client, parts, origin="http://evil.example").status_code == 403
+
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_an_upload_with_no_files_is_refused(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = client.post(
+            "/api/worlds/upload", data={"name": "Imported"}, headers={"Origin": ORIGIN}
+        )
+
+    assert response.status_code == 400
+    assert "Nothing was uploaded" in response.json()["error"]
+
+
+def test_an_archive_holding_two_worlds_is_refused(worlds):
+    archive = zip_bytes(
+        [
+            ("A/_main.1.db2", b"a"),
+            ("A/_main.1.fwl2", b"a"),
+            ("B/_main.1.db2", b"b"),
+            ("B/_main.1.fwl2", b"b"),
+        ]
+    )
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Worlds.zip", archive)])
+
+    assert response.status_code == 400
+    assert "more than one world" in response.json()["error"]
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_a_zip_that_is_not_a_zip_is_refused(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Imported.zip", b"not an archive at all")])
+
+    assert response.status_code == 400
+    assert "not a readable zip" in response.json()["error"]
+
+
+def test_an_archive_of_the_whole_worlds_directory_still_finds_the_world(worlds):
+    """`worlds_local/Imported/...` reduces to the world, and it keeps the world's own
+    name rather than the wrapper's."""
+    archive = zip_bytes(
+        [
+            ("worlds_local/Imported/_main.1.db2", b"data"),
+            ("worlds_local/Imported/_main.1.fwl2", b"meta"),
+        ]
+    )
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("backup.zip", archive)])
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Imported"
+
+
+def test_macos_archive_junk_does_not_defeat_the_folder_detection(worlds):
+    archive = zip_bytes(
+        [
+            ("Imported/_main.1.db2", b"data"),
+            ("Imported/_main.1.fwl2", b"meta"),
+            ("Imported/.DS_Store", b"junk"),
+            ("__MACOSX/Imported/._main.1.db2", b"junk"),
+        ]
+    )
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Imported.zip", archive)])
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Imported"
+    placed = worlds["dir"] / "Imported"
+    assert sorted(path.name for path in placed.iterdir()) == [
+        "_main.1.db2",
+        "_main.1.fwl2",
+    ]
+
+
+@POSIX_ONLY
+def test_an_uploaded_world_is_group_writable_so_the_game_can_save_to_it(worlds):
+    """The manager cannot chown -- `cap_drop: [ALL]` takes CAP_CHOWN and it is not root
+    -- so the group bit is the whole mechanism. A world written unwritable would
+    surface much later as the server silently failing to save."""
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert (
+            upload_world(
+                client,
+                [
+                    ("Imported/_main.1.db2", b"data"),
+                    ("Imported/_main.1.fwl2", b"meta"),
+                    ("Imported/0_0.chunk", b"chunk"),
+                ],
+            ).status_code
+            == 200
+        )
+        assert (
+            upload_world(
+                client, [("Grandfathered.db", b"d"), ("Grandfathered.fwl", b"m")]
+            ).status_code
+            == 200
+        )
+
+    placed = worlds["dir"] / "Imported"
+    mode = stat.S_IMODE(placed.stat().st_mode)
+    assert mode & stat.S_IWGRP, oct(mode)
+    assert mode & stat.S_IXGRP, oct(mode)
+    for child in placed.iterdir():
+        assert stat.S_IMODE(child.stat().st_mode) & stat.S_IWGRP, child
+    for name in ("Grandfathered.db", "Grandfathered.fwl"):
+        child = worlds["dir"] / name
+        assert stat.S_IMODE(child.stat().st_mode) & stat.S_IWGRP, child
+
+
+def test_the_manager_asks_for_group_writable_modes_whatever_the_platform(
+    worlds, monkeypatch
+):
+    """The companion to the POSIX test above, which cannot run on a Windows checkout:
+    whatever the filesystem then does with it, the manager has to *ask* for a
+    group-writable world on every file it writes."""
+    import app.worlds as worlds_module
+
+    calls: list[tuple[str, int]] = []
+    real_chmod = worlds_module.os.chmod
+
+    def recording_chmod(path, mode, *args, **kwargs):
+        calls.append((str(path), mode))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(worlds_module.os, "chmod", recording_chmod)
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert (
+            upload_world(
+                client,
+                [
+                    ("Imported/_main.1.db2", b"data"),
+                    ("Imported/_main.1.fwl2", b"meta"),
+                    ("Imported/0_0.chunk", b"chunk"),
+                ],
+            ).status_code
+            == 200
+        )
+
+    assert calls, "nothing had its mode set at all"
+    for path, mode in calls:
+        assert mode & stat.S_IWGRP, f"{path} was written without the group write bit"
+    modes = {mode for _path, mode in calls}
+    assert WORLD_FILE_MODE in modes
+    # The directory gets setgid where the kernel allows it, and the plain mode is the
+    # documented fallback; either way it is group-writable and group-searchable.
+    assert modes & {WORLD_DIR_MODE, 0o775}
+
+
+def test_a_failed_upload_leaves_no_staging_directory_behind(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert upload_world(client, [("Lonely.db", b"data")]).status_code == 400
+        assert upload_world(client, [("Imported/_main.1.db2", b"d")]).status_code == 400
+
+    assert list(worlds["dir"].iterdir()) == []
+
+
+# --------------------------------------------------------------- the surfaces
+
+
+def test_the_panel_explains_switching_uploading_and_the_seed(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    assert "Worlds" in page
+    assert "/config/worlds_local" in page
+    # What can be uploaded, spelled out in the panel itself.
+    assert "_main.N.db2" in page and "_main.N.fwl2" in page
+    assert ".db" in page and ".fwl" in page
+    # The legacy conversion warning, and the seed, which is why uploading exists.
+    assert "permanently" in page
+    assert "seed" in page
+    # The cap, rendered from the value the manager will actually enforce.
+    assert "2.0 MB" in page
+
+
+def test_the_compose_file_mounts_the_game_volume_and_shares_the_game_group(project_root):
+    """Two settings the feature cannot work without, neither of which is visible to a
+    test that only monkeypatches the environment."""
+    compose = (project_root / "docker-compose.yml").read_text(encoding="utf-8")
+    manager_block = compose.split("  manager:", 1)[1]
+    # Read-WRITE, spelled exactly: `valheim-config:/config:ro` contains the same
+    # substring and would mount a volume no upload could ever be placed on.
+    mounts = [
+        line.strip().lstrip("- ").strip()
+        for line in manager_block.splitlines()
+        if "valheim-config:/config" in line
+    ]
+    assert mounts == ["valheim-config:/config"], mounts
+    # The manager's group is the GAME's (PGID, 1000), not its own uid's.
+    assert 'user: "${MANAGER_UID:-10001}:${MANAGER_GID:-1000}"' in manager_block
+    for name in ("VALHEIM_WORLDS_DIR", "WORLD_UPLOAD_MAX_MB", "WORLD_UPLOAD_MAX_FILES"):
+        assert f"{name}:" in manager_block, f"{name} is never passed to the manager"
+    # Still nothing gained: the shared group is the alternative to a capability.
+    assert "cap_drop: [ALL]" in manager_block
+
+
+def test_the_managers_group_is_the_game_servers_own_group(project_root):
+    """The ownership design in one assertion: the manager writes worlds group-writable
+    and cannot chown, so its gid has to BE the gid the game server runs as. Editing
+    PGID in the shipped settings without editing MANAGER_GID breaks that silently, and
+    it surfaces as the server failing to save -- long after the upload said it worked.
+    """
+    compose = (project_root / "docker-compose.yml").read_text(encoding="utf-8")
+    manager_block = compose.split("  manager:", 1)[1]
+    manager_gid = re.search(r"MANAGER_GID:-(\d+)", manager_block).group(1)
+
+    for path in (
+        project_root / "valheim.env.example",
+        project_root / "manager" / ".env.example",
+    ):
+        text = path.read_text(encoding="utf-8")
+        if path.name == "valheim.env.example":
+            game_gid = parse_env_text(text)["PGID"]
+            assert game_gid == manager_gid, (
+                f"the game server runs as PGID={game_gid} but the manager's default "
+                f"group is {manager_gid}: uploaded worlds would not be writable by the "
+                "server, which shows up as lost saves rather than as an error"
+            )
+        else:
+            assert f"MANAGER_GID={manager_gid}" in text
+
+    # And the same gid is what the manager writes into a fresh settings file.
+    assert parse_env_text(DEFAULT_SETTINGS_TEXT)["PGID"] == manager_gid
+
+
+def test_the_env_example_documents_the_shared_group_and_the_caps(project_root):
+    example = (project_root / "manager" / ".env.example").read_text(encoding="utf-8")
+    assert "MANAGER_GID=1000" in example
+    assert "PGID" in example
+    assert "WORLD_UPLOAD_MAX_MB=1024" in example
+    assert "WORLD_UPLOAD_MAX_FILES=5000" in example
+
+
+def test_the_readme_covers_switching_uploading_and_the_group(project_root):
+    readme = (project_root / "README.md").read_text(encoding="utf-8")
+    assert "## Worlds: list, switch, and upload" in readme
+    assert "MANAGER_GID" in readme and "PGID" in readme
+    assert "seed" in readme
+    assert "permanently" in readme
+    assert "WORLD_UPLOAD_MAX_MB" in readme
+
+
+# ------------------------------------------------- the module's own edge cases
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["../escape", "a/b", "a\\b", "", "   ", ".", "..", ".hidden", "C:name", "x\x00y",
+     "trailing.", "x" * 65],
+)
+def test_sanitised_name_refuses_everything_that_is_not_one_segment(raw):
+    with pytest.raises(WorldError):
+        sanitised_name(raw)
+
+
+def test_a_world_name_is_stripped_rather_than_refused_for_its_whitespace():
+    # Every other field in this manager is stripped; a name is not worth refusing over
+    # a stray space the operator cannot see.
+    assert sanitised_name("  Dedicated  ") == "Dedicated"
+
+
+@pytest.mark.parametrize("raw", ["Dedicated", "Odin's Hall", "My World 2", "Åsgård"])
+def test_sanitised_name_keeps_the_names_valheim_actually_allows(raw):
+    # Spaces, apostrophes and Nordic letters are all real world names, so only what
+    # stops a name being a single path segment is refused. The escapes are deliberate:
+    # this literal was silently double-encoded once, and the round trip passed anyway.
+    assert sanitised_name(raw) == raw
+
+
+def test_human_size_states_the_unit_an_operator_would_use():
+    assert human_size(512) == "512 B"
+    assert human_size(2 * 1024 * 1024) == "2.0 MB"
+    assert human_size(3 * 1024 * 1024 * 1024) == "3.0 GB"
+
+
+# ------------------------------------------- the world knobs, read from the env
+#
+# `config_from_env` is where a deployed manager gets its limits, and nothing else in
+# this suite goes through it: dropping the megabyte conversion below would enforce a
+# 1024-BYTE cap on every real install while leaving the suite green.
+
+
+def test_the_world_knobs_are_read_from_the_environment(monkeypatch):
+    from app.main import config_from_env
+
+    monkeypatch.setenv("VALHEIM_WORLDS_DIR", "/config/worlds_local")
+    monkeypatch.setenv("WORLD_UPLOAD_MAX_MB", "32")
+    monkeypatch.setenv("WORLD_UPLOAD_MAX_FILES", "1234")
+    config = config_from_env()
+    assert config.worlds_dir == "/config/worlds_local"
+    # Megabytes in the env var, bytes in the config: the conversion is the whole
+    # point of the setting, and getting it wrong is a 1 KB cap nobody could upload to.
+    assert config.world_upload_max_bytes == 32 * 1024 * 1024
+    assert config.world_upload_max_files == 1234
+
+
+def test_the_world_knobs_have_the_documented_defaults(monkeypatch):
+    from app.main import config_from_env
+
+    for name in ("VALHEIM_WORLDS_DIR", "WORLD_UPLOAD_MAX_MB", "WORLD_UPLOAD_MAX_FILES"):
+        monkeypatch.delenv(name, raising=False)
+    config = config_from_env()
+    assert config.worlds_dir == "/config/worlds_local"
+    assert config.world_upload_max_bytes == 1024 * 1024 * 1024
+    assert config.world_upload_max_files == 5000
+
+
+def test_the_store_enforces_the_caps_the_page_states(env_file, fake_docker, worlds_dir):
+    """One source for each limit. An injected store used to enforce its own numbers
+    while the panel and the header gate quoted the config's."""
+    config = build_config(
+        env_file, worlds_dir=str(worlds_dir), world_upload_max_bytes=99 * 1024 * 1024
+    )
+    store = WorldStore(worlds_dir, max_upload_bytes=7 * 1024 * 1024, max_upload_files=11)
+    app = create_app(
+        config=config,
+        controller=build_control(config, fake_docker),
+        settings=SettingsStore(env_file),
+        worlds=store,
+    )
+    with TestClient(app) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+        page = client.get("/").text
+
+    assert payload["max_upload_bytes"] == 7 * 1024 * 1024
+    assert payload["max_upload"] == "7.0 MB"
+    assert payload["max_upload_files"] == 11
+    # ...and the page quotes the same numbers, not the config's.
+    assert "7.0 MB" in page and "99" not in page.split("Worlds")[-1].split("</table>")[0]
+    assert 'data-max-bytes="7340032"' in page
+    assert 'data-max-files="11"' in page
+
+
+# --------------------------------------- the limits the documented route runs into
+
+
+def test_a_folder_drop_of_more_than_a_thousand_files_is_accepted(worlds):
+    """The documented primary route is dropping the world's folder, and a 1.0 world is
+    one file per visited map chunk -- past the 1000 parts a multipart parser allows by
+    default. Reverting that limit would silently break the feature's main path."""
+    parts = [
+        ("Sprawling/_main.1.db2", b"data"),
+        ("Sprawling/_main.1.fwl2", b"meta"),
+        ("Sprawling/_main.1.ok", b""),
+    ]
+    parts += [(f"Sprawling/{index}_0.chunk", b"c") for index in range(1050)]
+    assert len(parts) > 1000
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, parts)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Sprawling"
+    assert len(list((worlds["dir"] / "Sprawling").iterdir())) == len(parts)
+
+
+def test_an_upload_past_the_file_limit_is_refused_pointing_at_the_zip(env_file, fake_docker, worlds_dir):
+    config = build_config(env_file, worlds_dir=str(worlds_dir))
+    app = create_app(
+        config=config,
+        controller=build_control(config, fake_docker),
+        settings=SettingsStore(env_file),
+        worlds=WorldStore(worlds_dir, max_upload_files=4),
+    )
+    parts = [("W/_main.1.db2", b"d"), ("W/_main.1.fwl2", b"m")]
+    parts += [(f"W/{index}_0.chunk", b"c") for index in range(6)]
+
+    with TestClient(app) as client:
+        login(client)
+        response = upload_world(client, parts)
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert "zip" in error
+    assert "Nothing was written" in error
+    # The standard refusal shape, not FastAPI's `detail`: Starlette turns the parser's
+    # own exception into an HTTPException whenever an app is in the scope.
+    assert "detail" not in response.json()
+    assert response.json()["worlds"] == []
+    assert list(worlds_dir.iterdir()) == []
+
+
+def test_an_upload_that_does_not_declare_its_size_is_refused(worlds):
+    """The size gate runs before the body is read, which it can only do if the size is
+    declared. Letting an undeclared one through would spool it in full first."""
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = client.post(
+            "/api/worlds/upload",
+            headers={
+                "Origin": ORIGIN,
+                "Content-Type": "multipart/form-data; boundary=x",
+                "Transfer-Encoding": "chunked",
+            },
+            content=iter([b"--x--\r\n"]),
+        )
+
+    assert response.status_code == 411, response.text
+    assert "Content-Length" in response.json()["error"]
+    assert list(worlds["dir"].iterdir()) == []
+
+
+# ----------------------------------------------- never overwrite, not even a half
+
+
+def test_a_lone_db_on_the_volume_still_blocks_an_upload_of_that_name(worlds):
+    """The listing hides a half-world on purpose -- which made it exactly the thing an
+    upload would rename straight over. The collision check reads the directory, not
+    the list."""
+    (worlds["dir"] / "Grandfathered.db").write_bytes(b"the only copy")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert client.get("/api/worlds").json()["worlds"] == []
+        response = upload_world(
+            client, [("Grandfathered.db", b"new"), ("Grandfathered.fwl", b"new")]
+        )
+
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert "Grandfathered" in error and "already taken" in error
+    assert (worlds["dir"] / "Grandfathered.db").read_bytes() == b"the only copy"
+    assert not (worlds["dir"] / "Grandfathered.fwl").exists()
+
+
+@pytest.mark.parametrize(
+    "existing, upload_as",
+    [
+        (["World.db", "world.fwl"], "World"),
+        (["World.db", "world.fwl"], "world"),
+        (["Dedicated.fwl"], "Dedicated"),
+        (["Dedicated.fwl"], "dedicated"),
+    ],
+)
+def test_a_case_mismatched_or_half_world_is_never_overwritten(worlds, existing, upload_as):
+    for name in existing:
+        (worlds["dir"] / name).write_bytes(b"the only copy")
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client,
+            [(f"{upload_as}/_main.1.db2", b"new"), (f"{upload_as}/_main.1.fwl2", b"new")],
+        )
+
+    assert response.status_code == 409, response.text
+    assert "already taken" in response.json()["error"]
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_a_directory_world_blocks_a_legacy_upload_of_the_same_name(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Dedicated.db", b"new"), ("Dedicated.fwl", b"m")])
+
+    assert response.status_code == 409, response.text
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_a_pair_beside_a_directory_of_the_same_name_is_one_row_not_two(worlds):
+    """Two rows would both be marked active, and the collision check would see one."""
+    make_modern_world(worlds["dir"], "Dedicated")
+    make_legacy_world(worlds["dir"], "Dedicated")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+
+    assert [row["name"] for row in payload["worlds"]] == ["Dedicated"]
+    assert payload["worlds"][0]["layout"] == "1.0"
+    assert len([row for row in payload["worlds"] if row["active"]]) == 1
+
+
+def test_a_pair_spelled_with_different_cases_is_listed_as_one_world(worlds):
+    (worlds["dir"] / "Grandfathered.db").write_bytes(b"data")
+    (worlds["dir"] / "grandfathered.fwl").write_bytes(b"meta")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+
+    # The `.db` holds the save, so its spelling names the world.
+    assert [row["name"] for row in payload["worlds"]] == ["Grandfathered"]
+    assert payload["worlds"][0]["layout"] == "legacy"
+
+
+def test_a_pair_uploaded_with_different_cases_is_accepted_as_one_world(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("World.db", b"data"), ("world.fwl", b"meta")])
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "World"
+    assert (worlds["dir"] / "World.db").read_bytes() == b"data"
+    assert (worlds["dir"] / "World.fwl").read_bytes() == b"meta"
+
+
+# ------------------------------------------------ the name an upload is stored as
+
+
+def test_a_legacy_pair_can_be_uploaded_under_a_different_name(worlds):
+    """The pair carries its old name in its own file names, and the new one is where
+    it lands -- two different strings that a swap would quietly transpose, writing
+    under the wrong name while reporting the right one."""
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(
+            client,
+            [("Grandfathered.db", b"data"), ("Grandfathered.fwl", b"meta")],
+            name="Renamed",
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["name"] == "Renamed"
+    assert payload["layout"] == "legacy"
+    assert (worlds["dir"] / "Renamed.db").read_bytes() == b"data"
+    assert (worlds["dir"] / "Renamed.fwl").read_bytes() == b"meta"
+    # The name it arrived under is gone entirely, including from the listing.
+    assert not (worlds["dir"] / "Grandfathered.db").exists()
+    assert not (worlds["dir"] / "Grandfathered.fwl").exists()
+    assert [row["name"] for row in payload["worlds"]] == ["Renamed"]
+    # And it is switchable under the new name, which is the point of the rename.
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert switch_world(client, "Renamed").status_code == 200
+    assert "WORLD_NAME=Renamed" in worlds["env"].read_text(encoding="utf-8")
+
+
+def test_a_zip_in_a_folder_does_not_suggest_the_folder_as_the_name(worlds):
+    """A browser part is named with its path; only the leaf names the world. A flat
+    archive is where this bit -- `Backups/Imported.zip` suggested `Backups/Imported`,
+    a name the manager then refused for a slash the operator never typed."""
+    archive = zip_bytes([("_main.1.db2", b"data"), ("_main.1.fwl2", b"meta")])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = upload_world(client, [("Backups/Imported.zip", archive)])
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Imported"
+
+
+# ----------------------------------------------- a world the switch would refuse
+
+
+@pytest.mark.parametrize("name", ["colon:name", "x" * 65])
+def test_a_world_the_switch_would_refuse_is_listed_but_not_offered(worlds, name):
+    """Listing a Load button the switch then rejects, for a name the operator never
+    typed, is the worst of both answers."""
+    try:
+        make_modern_world(worlds["dir"], name)
+    except OSError:
+        pytest.skip("this filesystem will not create a world directory with that name")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+        refused = switch_world(client, name)
+
+    row = next(row for row in payload["worlds"] if row["name"] == name)
+    assert row["loadable"] is False
+    assert row["unloadable"]
+    # ...and the switch says the same thing rather than a surprise.
+    assert refused.status_code == 400
+
+
+def test_a_normal_world_is_loadable(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        payload = client.get("/api/worlds").json()
+
+    assert payload["worlds"][0]["loadable"] is True
+    assert payload["worlds"][0]["unloadable"] == ""
+
+
+# ----------------------------------------------------- refusals reach the log
+
+
+def test_every_upload_refusal_is_logged_on_the_host(worlds, caplog):
+    """One JSON error in one browser was the whole trace a rejected traversal entry or
+    a run of oversize attempts left behind."""
+    archive = zip_bytes([("W/_main.1.db2", b"d"), ("../escape", b"owned")])
+    with caplog.at_level(logging.WARNING, logger="valheim_manager"):
+        with TestClient(worlds["app"]) as client:
+            login(client)
+            assert upload_world(client, [("W.zip", archive)]).status_code == 400
+            assert upload_world(client, [("Lonely.db", b"d")]).status_code == 400
+
+    logged = [record.getMessage() for record in caplog.records if "refused" in record.getMessage()]
+    assert len(logged) == 2, logged
+    assert any("outside the world directory" in line for line in logged)

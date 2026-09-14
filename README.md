@@ -98,6 +98,7 @@ Nothing below is required — the stack runs with none of these files present.
 | Location | Holds | Written by |
 |---|---|---|
 | `valheim-manager-state` volume | admin user, password hash, session secret, mode `0600` | the setup wizard |
+| `valheim-config` volume | the worlds (`/config/worlds_local`), the image's hourly backups | the game server; the manager adds uploaded worlds |
 | `./settings/valheim.env` | game settings: `SERVER_NAME`, `SERVER_PASS`, `WORLD_NAME`, … | the manager on first boot, then you |
 | `.env` *(optional)* | Compose knobs: ports, image, volume names, log tuning | you |
 | `manager.env` *(optional)* | `ADMIN_USER`, `ADMIN_PASSWORD_HASH`, `SESSION_SECRET` — the advanced path below | you |
@@ -271,10 +272,19 @@ Jupyter/Portainer precedent). The specifics:
   already true of anyone who can reach the Docker socket, so it is not a new
   boundary — but treat the log as sensitive until setup is done.
 
-**Origin check.** `POST /api/start|stop|restart|settings` (and `/login`, `/logout`) require an
-`Origin` header matching the server's own host, or one listed in
-`ALLOWED_ORIGINS`. A request with a valid session cookie but a foreign or absent
-`Origin` is rejected before any Docker call is made.
+**Origin check.** `POST /api/start|stop|restart|settings|worlds/switch|worlds/upload`
+(and `/login`, `/logout`) require an `Origin` header matching the server's own host,
+or one listed in `ALLOWED_ORIGINS`. A request with a valid session cookie but a
+foreign or absent `Origin` is rejected before any Docker call is made — and, for an
+upload, before its body is read.
+
+**The game volume.** The manager mounts `valheim-config` read-write so the Worlds
+panel can see `/config/worlds_local`. It only ever *adds* worlds there: there is no
+delete path in this build, uploads are refused rather than allowed to overwrite an
+existing world, and every name — typed, dropped, or read out of an archive — is
+reduced to a single path segment and re-resolved against the destination before
+anything is written. An archive entry that would land outside the world's own
+directory is refused and nothing is written anywhere.
 
 **Signing out is not revocation.** `POST /logout` clears the cookie in *that* browser,
 but the token it held stays cryptographically valid until
@@ -399,7 +409,8 @@ refused rather than a rewrite behind its back.
 `WORLD_NAME` is the one field to think twice about: it selects which save to load, so
 pointing it at a name that does not exist yet makes the next Start generate a *new*
 world with a new random seed rather than changing the old one's. The old world stays
-on the volume.
+on the volume. To move between worlds that already exist, use the **Worlds** panel
+below instead — it only offers names that are really there.
 
 ### World modifiers
 
@@ -462,11 +473,91 @@ Start then creates a new container from the edited file. `docker rm` refuses a r
 container, which is why step 2 has to finish first.
 
 (Not built yet: a "Backup now" button, mod toggles, admin/ban-list editing, backup
-browse and restore, and world upload — which is also the only way to choose a world
-seed, since the dedicated server takes no seed argument.)
+browse and restore, and deleting a world from the UI.)
 
 The image keeps taking its own hourly world backups into `/config/backups` on the
 `valheim-config` volume regardless.
+
+## Worlds: list, switch, and upload
+
+The **Worlds** panel lists what is actually on the `valheim-config` volume under
+`/config/worlds_local` — each world with its layout, its size, and the active one
+marked — lets you switch which one the server loads, and accepts a world dragged in
+from your own PC. Like the settings panel it works **only while the server is off**,
+and the manager re-checks that for itself when the request arrives.
+
+**Switching.** Press **Load** on a world. That writes `WORLD_NAME` through the same
+validated path the settings panel uses and removes the stopped container, so the next
+**Start** loads that world. Only worlds the manager can actually see are offered:
+picking one can never leave you with a brand-new empty world the way a typo in
+`WORLD_NAME` can.
+
+**Uploading.** Drop a world onto the panel (or use *Choose a folder…* / *Choose
+files…*). This is the only way to choose a world **seed** — `valheim_server.x86_64`
+takes no `-seed` argument, so a world with the seed you want has to be generated in
+the game and imported here. On Windows, a local world lives in
+`%USERPROFILE%\AppData\LocalLow\IronGate\Valheim\worlds_local`.
+
+| What to drop | Recognised as | Notes |
+|---|---|---|
+| The world's folder | 1.0 world | Must hold `_main.N.db2` and `_main.N.fwl2`. Named after the folder. |
+| A `.zip` of that folder | 1.0 world | One archive at a time. Best for a big world — a 1.0 world is one file per visited map chunk, and that can be thousands of them. |
+| A matching `.db` + `.fwl` pair | pre-1.0 world | Both files, together. |
+
+Two limits apply per upload, both stated in the panel and both refused with the limit
+named: `WORLD_UPLOAD_MAX_MB` (1024 MB by default) and `WORLD_UPLOAD_MAX_FILES` (5000).
+The file count is the one a *folder* drop runs into, since every visited map chunk is
+its own file — a `.zip` is a single file whatever the world's size, which is why it is
+the better route for a well-explored world.
+
+Three things the upload will not do:
+
+- **Overwrite.** A name already in use on the volume is refused, and what is standing
+  there is named. That check reads the directory itself rather than the world list, so
+  a *half* world — a lone `.db`, or a pair whose halves are spelled differently — is in
+  the way too, even though the list does not show it. Give the upload a different name
+  in *Name on the server* and try again.
+- **Half-write.** The upload is validated in full, written to a hidden staging
+  directory, and only then moved into place under its real name. Until that last
+  rename nothing on the volume carries the world's name, so there is no moment at
+  which the server could load a partly-written world.
+- **Trust the archive.** Entry names are re-rooted and resolved first: an entry
+  named `../escape`, an absolute path, or a symbolic link is refused before
+  extraction starts and nothing is written anywhere. A body whose declared size is
+  past `WORLD_UPLOAD_MAX_MB` is refused before the volume is touched at all — before
+  it is read, in fact — which is also why an upload that does not declare its size is
+  refused rather than being let through the gate. Every refusal is logged on the host.
+
+**Pre-1.0 worlds convert, permanently.** A `.db` / `.fwl` pair still loads, but the
+first time the server opens it Valheim rewrites it into the 1.0 folder layout and
+there is no way back. The panel says so before and after the upload; keep your own
+copy of the pair if you may want the old format again.
+
+### The shared group (`MANAGER_GID`)
+
+The game server runs as `PUID:PGID` from `settings/valheim.env` (1000 by default) and
+saves to its world continuously. The manager runs as its own uid with `cap_drop:
+[ALL]`, so it **cannot** `chown` what it writes — there is no CAP_CHOWN and it is not
+root. A world uploaded under the wrong group would be readable but not writable, and
+that surfaces much later as the server silently failing to save.
+
+So the manager runs with the *game's group* and writes uploaded worlds
+group-writable: `user: "${MANAGER_UID:-10001}:${MANAGER_GID:-1000}"` in
+`docker-compose.yml`. **Keep `MANAGER_GID` equal to `PGID`.** If you change `PGID` in
+`settings/valheim.env`, set `MANAGER_GID` to match in `.env`.
+
+The worlds directory itself belongs to the game server, which normally creates it on
+its first **Start**. On a brand-new volume the manager will create it if `/config`
+lets it, and say so plainly if it cannot — in which case press Start once and upload
+afterwards. If the manager reports that it cannot write into an existing worlds
+directory, make it group-writable once, from the host:
+
+```bash
+docker run --rm -v valheim-config:/config alpine \
+  sh -c 'chmod 2775 /config/worlds_local'
+```
+
+Nothing here deletes a world. Removing one is still a host operation, on purpose.
 
 ## Verify
 
@@ -551,6 +642,8 @@ manager/
     settings_store.py         read + atomic comment-preserving write of valheim.env
     modifiers.py              the world-modifier vocabulary, parsed to and from
                               SERVER_ARGS
+    worlds.py                 the worlds on the game volume: listing, upload
+                              validation, staged group-writable placement
     templates/ static/        server-rendered HTML + vanilla JS, no build step
     tests/test_edge_cases.py  I/O-matrix edge cases against a fake engine
 ```

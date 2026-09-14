@@ -33,6 +33,24 @@
     modifierFields: document.getElementById("modifier-fields"),
     modifierPreview: document.getElementById("modifier-preview"),
     modifierUnmanaged: document.getElementById("modifier-unmanaged-note"),
+    worldsBody: document.getElementById("worlds-body"),
+    worldsTable: document.getElementById("worlds-table"),
+    worldsEmpty: document.getElementById("worlds-empty"),
+    worldsError: document.getElementById("worlds-error"),
+    worldsLocked: document.getElementById("worlds-locked"),
+    worldsRefresh: document.getElementById("btn-worlds-refresh"),
+    uploadForm: document.getElementById("world-upload-form"),
+    dropzone: document.getElementById("world-dropzone"),
+    folderInput: document.getElementById("world-folder-input"),
+    fileInput: document.getElementById("world-file-input"),
+    pickFolder: document.getElementById("btn-pick-folder"),
+    pickFiles: document.getElementById("btn-pick-files"),
+    selection: document.getElementById("world-selection"),
+    uploadName: document.getElementById("world-upload-name"),
+    uploadButton: document.getElementById("btn-world-upload"),
+    uploadReset: document.getElementById("btn-world-reset"),
+    uploadProgress: document.getElementById("world-progress"),
+    legacyWarning: document.getElementById("world-legacy-warning"),
     start: document.getElementById("btn-start"),
     stop: document.getElementById("btn-stop"),
     restart: document.getElementById("btn-restart"),
@@ -72,6 +90,13 @@
   // "running" -- which must NOT retract the force-stop option the operator now
   // needs. Cleared only once the container is actually down, or on a force attempt.
   var forceOffered = false;
+  // The worlds panel's own state: the last listing the manager sent, and the files the
+  // operator has picked or dropped but not yet uploaded.
+  var lastWorlds = null;
+  var selection = [];
+  var uploading = false;
+  // The in-flight upload, so Clear can abort it.
+  var uploadRequest = null;
 
   // ---------------------------------------------------------------- console
 
@@ -153,23 +178,34 @@
     }
 
     syncSettingsControls();
+    syncWorldControls();
   }
 
   // -------------------------------------------------------- settings editor
 
-  // Why editing is refused, or null when the server is off. The manager re-checks this
-  // for itself when a save arrives -- this is only about not offering what would be
-  // refused.
-  function settingsLockReason(status) {
+  // Why a panel is refused, or null when the server is off. The manager re-checks this
+  // for itself when the request arrives -- this is only about not offering what would
+  // be refused.
+  function lockReason(status, readOnly, action) {
     if (OFF_PHASES[status.phase]) { return null; }
     if (status.phase === "error") {
       return "The manager cannot reach Docker, so it cannot tell whether the server is" +
-        " running. Settings stay read-only until it can.";
+        " running. " + readOnly + " until it can.";
     }
     var label = (PHASES[status.phase] || PHASES.error).label;
-    return "The server is " + label + ". Stop it before changing settings: an existing" +
-      " container keeps the environment it was created with, so a new value could not" +
-      " take effect anyway.";
+    return "The server is " + label + ". Stop it before " + action + ".";
+  }
+
+  function settingsLockReason(status) {
+    return lockReason(status, "Settings stay read-only",
+      "changing settings: an existing container keeps the environment it was created" +
+      " with, so a new value could not take effect anyway");
+  }
+
+  function worldsLockReason(status) {
+    return lockReason(status, "The worlds panel stays read-only",
+      "switching or uploading a world: the running server holds its world open and" +
+      " saves to it continuously");
   }
 
   function syncSettingsControls() {
@@ -409,6 +445,436 @@
     if (editing) { renderModifierPreview(); } else { fillModifiers(mods); }
   }
 
+  // ------------------------------------------------------------ worlds panel
+  //
+  // Listing is a fetch of its own rather than a status push: walking the volume every
+  // couple of seconds, per open tab, would be a real cost for a list that only changes
+  // when this panel changes it. Every world answer carries the whole panel back, so a
+  // switch refreshes the settings table and the badge along with the list.
+
+  function syncWorldControls() {
+    if (!el.worldsBody) { return; }
+    // No status yet means LOCKED, not unlocked: this panel's list is fetched before
+    // the WebSocket connects, so defaulting the other way would leave Load and the
+    // pickers live against a server that is running, until the first frame lands.
+    var reason = lastStatus
+      ? worldsLockReason(lastStatus)
+      : "Waiting for the first status from the manager…";
+    var busy = pendingAction || uploading;
+    el.worldsLocked.textContent = reason || "";
+    el.worldsLocked.hidden = !reason;
+    var buttons = el.worldsBody.querySelectorAll("button[data-world]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].disabled = !!reason || busy;
+    }
+    el.uploadButton.disabled = !!reason || busy || !selection.length;
+    // Clear stays live while an upload is in flight: it is the abort.
+    el.uploadReset.disabled = pendingAction && !uploading;
+    el.pickFolder.disabled = !!reason || busy;
+    el.pickFiles.disabled = !!reason || busy;
+    el.uploadName.disabled = !!reason || busy;
+    el.worldsRefresh.disabled = busy;
+  }
+
+  function renderWorlds(payload) {
+    if (!el.worldsBody || !payload) { return; }
+    lastWorlds = payload.worlds || [];
+    if (payload.worlds_error) {
+      el.worldsError.textContent = payload.worlds_error;
+      el.worldsError.hidden = false;
+    } else {
+      el.worldsError.hidden = true;
+      el.worldsError.textContent = "";
+    }
+    el.worldsBody.textContent = "";
+    for (var i = 0; i < lastWorlds.length; i++) {
+      el.worldsBody.appendChild(worldRow(lastWorlds[i]));
+    }
+    // The empty note and the table are alternatives; an unreadable volume is neither
+    // (the error above says why the list is empty, and inviting an upload into a
+    // directory the manager cannot read would just produce a second failure).
+    var empty = !lastWorlds.length && !payload.worlds_error;
+    el.worldsEmpty.hidden = !empty;
+    el.worldsTable.hidden = !lastWorlds.length;
+    syncWorldControls();
+  }
+
+  function worldRow(world) {
+    var tr = document.createElement("tr");
+    var name = document.createElement("td");
+    name.className = "world-name";
+    name.textContent = world.name;
+    tr.appendChild(name);
+
+    var layout = document.createElement("td");
+    var tag = document.createElement("span");
+    tag.className = world.legacy ? "tag tag-legacy" : "tag";
+    tag.textContent = world.layout;
+    layout.appendChild(tag);
+    if (world.legacy) {
+      var note = document.createElement("div");
+      note.className = "muted small";
+      note.textContent = "loading it converts it to 1.0, permanently";
+      layout.appendChild(note);
+    }
+    tr.appendChild(layout);
+
+    var size = document.createElement("td");
+    size.textContent = world.size;
+    tr.appendChild(size);
+
+    var action = document.createElement("td");
+    action.className = "world-action";
+    if (world.active) {
+      var active = document.createElement("span");
+      active.className = "tag tag-active";
+      active.textContent = "active";
+      action.appendChild(active);
+    } else if (world.loadable === false) {
+      // The manager would refuse this name if it were sent, so offering Load would
+      // hand the operator a 400 about a name they never typed. Say why instead.
+      var blocked = document.createElement("span");
+      blocked.className = "muted small";
+      blocked.textContent = world.unloadable || "cannot be selected";
+      action.appendChild(blocked);
+    } else {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost";
+      button.setAttribute("data-world", world.name);
+      button.textContent = "Load";
+      action.appendChild(button);
+    }
+    tr.appendChild(action);
+    return tr;
+  }
+
+  function refreshWorlds() {
+    return fetch("/api/worlds", { credentials: "same-origin" }).then(function (response) {
+      if (response.status === 401) { window.location.href = "/login"; return null; }
+      return response.json().catch(function () { return null; });
+    }).then(function (payload) {
+      if (payload) { renderWorlds(payload); }
+      return payload;
+    }).catch(function (err) {
+      showError("Could not list the worlds: " + err, "worlds");
+      return null;
+    });
+  }
+
+  function switchWorld(name) {
+    system("switching to world " + name);
+    post("/api/worlds/switch", { name: name }).then(function (payload) {
+      if (!payload || !payload.saved) { return; }
+      if (payload.message) { system(payload.message); }
+      // An editor that was already open still holds the OLD world name, and saving it
+      // would quietly switch back. The rest of the form is the operator's; this one
+      // field is now theirs by way of this button, so it follows.
+      if (editing && el.settingsForm.elements.WORLD_NAME) {
+        el.settingsForm.elements.WORLD_NAME.value = payload.active_world || name;
+      }
+    });
+  }
+
+  // ------------------------------------------------------------ world upload
+
+  function fileLeaf(path) {
+    return path.split("/").pop().toLowerCase();
+  }
+
+  // Only a hint, shown before the upload so the conversion is not a surprise sprung
+  // afterwards; the manager makes the same call on the files it actually receives and
+  // repeats the warning in its answer.
+  function looksLegacy(entries) {
+    var db = false;
+    var fwl = false;
+    for (var i = 0; i < entries.length; i++) {
+      var leaf = fileLeaf(entries[i].path);
+      if (/\.(db2|fwl2)$/.test(leaf)) { return false; }
+      if (/\.db$/.test(leaf)) { db = true; }
+      if (/\.fwl$/.test(leaf)) { fwl = true; }
+    }
+    return db && fwl;
+  }
+
+  // Every size an operator reads is formatted by the manager and shipped in the
+  // payload (`max_upload`, each world's `size`). There is deliberately no size
+  // formatter in this file: two of them are two chances to state a limit that is not
+  // the one being enforced.
+  function maxUploadBytes() {
+    return parseInt(el.uploadForm.getAttribute("data-max-bytes"), 10) || 0;
+  }
+
+  function maxUploadHuman() {
+    return el.uploadForm.getAttribute("data-max-human") || "the limit";
+  }
+
+  function maxUploadFiles() {
+    return parseInt(el.uploadForm.getAttribute("data-max-files"), 10) || 0;
+  }
+
+  function selectionBytes() {
+    var total = 0;
+    for (var i = 0; i < selection.length; i++) { total += selection[i].file.size; }
+    return total;
+  }
+
+  // The name the manager will derive if the operator types none: the world's own
+  // folder, or a lone file's base name. Only used to warn about a clash before the
+  // upload -- the manager decides the real one.
+  function impliedName() {
+    if (el.uploadName.value.trim()) { return el.uploadName.value.trim(); }
+    if (!selection.length) { return ""; }
+    var first = selection[0].path;
+    if (first.indexOf("/") !== -1) { return first.split("/")[0]; }
+    return first.replace(/\.(zip|db|fwl)$/i, "");
+  }
+
+  function setSelection(entries) {
+    selection = entries.filter(function (entry) {
+      // Whatever the operating system slipped into the folder. The manager drops these
+      // too; doing it here as well keeps the count the operator reads honest.
+      var leaf = fileLeaf(entry.path);
+      return leaf !== ".ds_store" && leaf !== "thumbs.db" && leaf !== "desktop.ini" &&
+        entry.path.toLowerCase().indexOf("__macosx/") !== 0;
+    });
+    el.legacyWarning.hidden = !looksLegacy(selection);
+    if (!selection.length) {
+      el.selection.textContent = "Nothing selected yet.";
+    } else {
+      var folder = selection[0].path.indexOf("/") === -1
+        ? "" : " (" + selection[0].path.split("/")[0] + ")";
+      el.selection.textContent = selection.length === 1
+        ? selection[0].path
+        : selection.length + " files" + folder;
+    }
+    syncWorldControls();
+  }
+
+  function clearSelection() {
+    el.uploadProgress.hidden = true;
+    el.uploadProgress.value = 0;
+    el.fileInput.value = "";
+    el.folderInput.value = "";
+    setSelection([]);
+  }
+
+  // A dropped directory is walked here rather than in the manager: the browser hands
+  // over a tree, and each file's path within it is what tells the manager the world's
+  // own folder name. `readEntries` returns a slice at a time, so it is called until it
+  // comes back empty -- a world has more chunk files than one call will ever return.
+  //
+  // Failures are COUNTED rather than skipped. A world missing some of its chunk files
+  // still satisfies the `_main.N.db2` + `_main.N.fwl2` shape check, so a walk that
+  // quietly dropped what it could not read would upload a silently incomplete world --
+  // which is worse than any refusal, because it looks like it worked.
+  function readEntry(entry, prefix, failures) {
+    return new Promise(function (resolve) {
+      if (!entry) { failures.push(prefix + "(unreadable item)"); resolve([]); return; }
+      if (entry.isFile) {
+        entry.file(function (file) {
+          resolve([{ file: file, path: prefix + entry.name }]);
+        }, function () {
+          failures.push(prefix + entry.name);
+          resolve([]);
+        });
+        return;
+      }
+      if (!entry.isDirectory) {
+        failures.push(prefix + entry.name);
+        resolve([]);
+        return;
+      }
+      var reader = entry.createReader();
+      var children = [];
+      var readBatch = function () {
+        reader.readEntries(function (batch) {
+          if (!batch.length) {
+            Promise.all(children.map(function (child) {
+              return readEntry(child, prefix + entry.name + "/", failures);
+            })).then(function (lists) {
+              resolve([].concat.apply([], lists));
+            });
+            return;
+          }
+          children = children.concat(Array.prototype.slice.call(batch));
+          readBatch();
+        }, function () {
+          failures.push(prefix + entry.name + "/");
+          resolve([]);
+        });
+      };
+      readBatch();
+    });
+  }
+
+  function onDrop(event) {
+    event.preventDefault();
+    el.dropzone.classList.remove("is-over");
+    var reason = lastStatus ? worldsLockReason(lastStatus) : null;
+    if (reason || uploading) {
+      // Locked or busy: say so rather than filling the panel with files it will not
+      // send, and leave whatever was already selected alone.
+      showError(reason || "An upload is already in flight.", "worlds");
+      return;
+    }
+    var transfer = event.dataTransfer;
+    var failures = [];
+    var jobs = [];
+    var items = transfer.items;
+    var i;
+    var entry;
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      // Must be called synchronously here: the items are emptied once this handler
+      // returns, and a walk started afterwards would find nothing. Text and URLs are
+      // not entries at all, and come back null.
+      for (i = 0; i < items.length; i++) {
+        entry = items[i].webkitGetAsEntry();
+        if (entry) { jobs.push(readEntry(entry, "", failures)); }
+      }
+    }
+    if (!jobs.length) {
+      var plain = [];
+      for (i = 0; i < transfer.files.length; i++) {
+        plain.push({ file: transfer.files[i], path: transfer.files[i].name });
+      }
+      if (!plain.length) {
+        // Dropped text, a link, or something the browser will not hand over as a file.
+        // Keeping the current selection matters: silently emptying it looks like the
+        // drop worked.
+        showError("That drop contained nothing the manager could read as a file. " +
+          "Drop the world's folder, a .zip of it, or a .db and .fwl pair.", "worlds");
+        return;
+      }
+      setSelection(plain);
+      return;
+    }
+    Promise.all(jobs).then(function (lists) {
+      if (failures.length) {
+        showError("The browser could not read " + failures.length + " item(s) in that " +
+          "drop (for instance " + failures[0] + "), so nothing was selected: an " +
+          "incomplete world would still look like a valid one. Try again, or zip the " +
+          "world's folder and drop the .zip.", "worlds");
+        return;
+      }
+      setSelection([].concat.apply([], lists));
+    });
+  }
+
+  function fromInput(input) {
+    var entries = [];
+    for (var i = 0; i < input.files.length; i++) {
+      var file = input.files[i];
+      entries.push({ file: file, path: file.webkitRelativePath || file.name });
+    }
+    setSelection(entries);
+  }
+
+  // Everything the manager is certain to refuse, refused here first. The manager is
+  // still the check that counts -- these only spare the operator pushing a gigabyte up
+  // the wire to be told no at the far end.
+  function refusalAhead() {
+    var cap = maxUploadBytes();
+    if (cap && selectionBytes() > cap) {
+      return "That is past the " + maxUploadHuman() +
+        " limit on one world upload. Nothing was uploaded.";
+    }
+    var limit = maxUploadFiles();
+    if (limit && selection.length > limit) {
+      return "That is " + selection.length + " files, and the manager accepts at most " +
+        limit + " in one upload. Zip the world's folder and drop the .zip instead — " +
+        "an archive is one file whatever the world's size. Nothing was uploaded.";
+    }
+    var wanted = impliedName().toLowerCase();
+    for (var i = 0; wanted && lastWorlds && i < lastWorlds.length; i++) {
+      if (lastWorlds[i].name.toLowerCase() === wanted) {
+        return "A world called " + lastWorlds[i].name + " is already on the volume, " +
+          "and the manager never overwrites one. Give this upload a different name " +
+          "below. Nothing was uploaded.";
+      }
+    }
+    return null;
+  }
+
+  function uploadWorld() {
+    if (!selection.length || uploading) { return; }
+    var ahead = refusalAhead();
+    if (ahead) {
+      showError(ahead, "worlds");
+      return;
+    }
+    var body = new FormData();
+    for (var i = 0; i < selection.length; i++) {
+      // The third argument is the part's filename, and it is how each file's path
+      // inside the dropped folder reaches the manager -- a browser would otherwise
+      // send the bare name and the world's own folder name would be lost.
+      body.append("files", selection[i].file, selection[i].path);
+    }
+    body.append("name", el.uploadName.value);
+
+    uploading = true;
+    clearError();
+    el.uploadProgress.hidden = false;
+    el.uploadProgress.value = 0;
+    syncWorldControls();
+    system("uploading " + selection.length + " file(s)");
+
+    // Module scope, not a local: Clear aborts it, so a mistaken 900 MB drop does not
+    // mean reloading the page and waiting for it to finish first.
+    uploadRequest = new XMLHttpRequest();
+    var request = uploadRequest;
+    request.open("POST", "/api/worlds/upload");
+    request.withCredentials = true;
+    request.upload.onprogress = function (event) {
+      if (event.lengthComputable) {
+        el.uploadProgress.value = Math.round((event.loaded / event.total) * 100);
+      }
+    };
+    request.onload = function () {
+      uploading = false;
+      uploadRequest = null;
+      el.uploadProgress.hidden = true;
+      if (request.status === 401) { window.location.href = "/login"; return; }
+      var payload = null;
+      try { payload = JSON.parse(request.responseText); } catch (err) { payload = null; }
+      if (request.status >= 200 && request.status < 300) {
+        if (payload && payload.message) { system(payload.message); }
+        if (payload && payload.warning) { system(payload.warning); }
+        clearSelection();
+        el.uploadName.value = "";
+      } else {
+        showError((payload && payload.error) || "The upload was refused.", "worlds");
+      }
+      if (payload) {
+        if (payload.settings) { renderSettings(payload.settings, payload.settings_error); }
+        if (payload.worlds) { renderWorlds(payload); }
+        if (payload.status) { renderStatus(payload.status); }
+      }
+      syncWorldControls();
+    };
+    request.onerror = function () {
+      uploading = false;
+      uploadRequest = null;
+      el.uploadProgress.hidden = true;
+      showError("The upload could not reach the manager.", "worlds");
+      syncWorldControls();
+    };
+    request.onabort = function () {
+      uploading = false;
+      uploadRequest = null;
+      el.uploadProgress.hidden = true;
+      // Nothing is written until the whole body is in, so an aborted upload leaves the
+      // volume untouched -- worth saying, since the operator just cancelled a transfer.
+      system("upload cancelled — nothing was written");
+      syncWorldControls();
+    };
+    request.send(body);
+  }
+
+  function abortUpload() {
+    if (uploadRequest) { uploadRequest.abort(); }
+  }
+
   // -------------------------------------------------------------- websocket
 
   function wsUrl() {
@@ -487,6 +953,9 @@
     pendingAction = true;
     el.start.disabled = el.stop.disabled = el.restart.disabled = true;
     syncSettingsControls();
+    // The worlds panel has to take the busy lock too, or two presses of Load race the
+    // same write to the settings file.
+    syncWorldControls();
     clearError();
     return fetch(path, {
       method: "POST",
@@ -524,6 +993,11 @@
       if (payload && payload.modifiers) {
         renderModifiers(payload.modifiers);
       }
+      // A world switch answers with the whole panel, list included; a start or stop
+      // does not carry one and leaves the list as it is.
+      if (payload && payload.worlds) {
+        renderWorlds(payload);
+      }
       if (payload && payload.status) {
         renderStatus(payload.status);
       } else if (lastStatus) {
@@ -533,6 +1007,7 @@
         // controls back rather than leaving them dead.
         el.start.disabled = el.stop.disabled = el.restart.disabled = false;
         syncSettingsControls();
+        syncWorldControls();
       }
       return payload;
     });
@@ -569,6 +1044,63 @@
       saveSettings();
     });
     syncSettingsControls();
+  }
+
+  if (el.uploadForm && el.worldsBody) {
+    el.worldsBody.addEventListener("click", function (event) {
+      var button = event.target.closest
+        ? event.target.closest("button[data-world]") : null;
+      if (button && !button.disabled) { switchWorld(button.getAttribute("data-world")); }
+    });
+    el.worldsRefresh.addEventListener("click", function () { refreshWorlds(); });
+    el.pickFolder.addEventListener("click", function () { el.folderInput.click(); });
+    el.pickFiles.addEventListener("click", function () { el.fileInput.click(); });
+    el.folderInput.addEventListener("change", function () { fromInput(el.folderInput); });
+    el.fileInput.addEventListener("change", function () { fromInput(el.fileInput); });
+    el.uploadReset.addEventListener("click", function () {
+      // Doubles as the abort: while an upload is in flight this is the only way out of
+      // a mistaken multi-hundred-megabyte drop short of reloading the page.
+      if (uploading) {
+        abortUpload();
+        return;
+      }
+      clearSelection();
+      el.uploadName.value = "";
+    });
+    // The drop zone is in the tab order, so it has to do something when a keyboard
+    // reaches it; the folder picker is the equivalent of dropping a folder on it.
+    el.dropzone.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") {
+        return;
+      }
+      if (event.target !== el.dropzone) { return; }
+      event.preventDefault();
+      if (!el.pickFolder.disabled) { el.folderInput.click(); }
+    });
+    el.uploadForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      uploadWorld();
+    });
+    // dragover must be cancelled or the browser navigates to the dropped file instead.
+    ["dragenter", "dragover"].forEach(function (name) {
+      el.dropzone.addEventListener(name, function (event) {
+        event.preventDefault();
+        el.dropzone.classList.add("is-over");
+      });
+    });
+    el.dropzone.addEventListener("dragleave", function (event) {
+      if (event.target === el.dropzone) { el.dropzone.classList.remove("is-over"); }
+    });
+    el.dropzone.addEventListener("drop", onDrop);
+    // A file dropped anywhere else would otherwise replace the page with it, which
+    // looks exactly like the upload having gone somewhere.
+    ["dragover", "drop"].forEach(function (name) {
+      window.addEventListener(name, function (event) {
+        if (!el.dropzone.contains(event.target)) { event.preventDefault(); }
+      });
+    });
+    setSelection([]);
+    refreshWorlds();
   }
 
   connect();

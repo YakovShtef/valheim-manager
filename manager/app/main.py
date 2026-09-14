@@ -13,6 +13,9 @@ Route map
 ``POST /api/stop``     graceful stop, ``{"force": true}`` to kill (auth + origin check)
 ``POST /api/restart``  stop then start             (auth + origin check)
 ``POST /api/settings`` save edited settings, only while off (auth + origin check)
+``GET  /api/worlds``   the worlds on the game volume, active one marked (auth required)
+``POST /api/worlds/switch``  point WORLD_NAME at one, only while off (auth + origin)
+``POST /api/worlds/upload``  multipart world import, only while off (auth + origin)
 ``WS   /ws/logs``      status pushes + live log lines (auth required)
 ``GET  /healthz``      unauthenticated liveness probe, leaks nothing
 
@@ -44,6 +47,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException
+from starlette.formparsers import MultiPartException
+from starlette.requests import ClientDisconnect
 from starlette.websockets import WebSocketDisconnect
 
 from .auth import LOGIN_ERROR, AuthConfigError, SessionAuth
@@ -75,6 +82,21 @@ from .setup import (
     validated_settings,
 )
 from .state_store import ManagerState, StateStore, StateStoreError
+from .worlds import (
+    DEFAULT_MAX_UPLOAD_FILES,
+    DEFAULT_MAX_UPLOAD_MB,
+    DEFAULT_WORLDS_DIR,
+    LEGACY_WARNING,
+    WorldCollisionError,
+    WorldError,
+    WorldStore,
+    WorldTooLargeError,
+    human_size,
+    opened_upload,
+    oversize_message,
+    plan_upload,
+)
+from .worlds import sanitised_name as sanitised_world_name
 
 log = logging.getLogger("valheim_manager")
 
@@ -99,6 +121,13 @@ DEFAULT_READY_PATTERN = r"game server connected|Ready for connections"
 
 # A poll faster than this is a busy loop against the socket proxy, not a feature.
 MIN_LOG_POLL_SECONDS = 0.2
+
+# Non-file form fields in an upload. Only `name` is expected; the rest is slack.
+MAX_UPLOAD_FIELDS = 32
+# Multipart boundaries, part headers and the trailing epilogue, none of which are the
+# world: allowance so a world sitting exactly on the cap is not refused for its
+# envelope. The summed part sizes are what the cap is actually enforced against.
+_MULTIPART_ENVELOPE_SLACK = 8 * 1024 * 1024
 # Below this a session expires before the operator can use it, and the browser just
 # bounces between / and /login with nothing to explain why.
 MIN_SESSION_MAX_AGE_SECONDS = 60
@@ -177,6 +206,11 @@ class AppConfig:
     # Inside the mounted settings *directory*: a missing file is the manager's to
     # create, whereas a missing single-file bind mount becomes a host directory.
     env_file: str = "/srv/settings/valheim.env"
+    # On the game's own `valheim-config` volume, which the manager now mounts too.
+    # The game server owns this directory; the manager only ever adds worlds to it.
+    worlds_dir: str = DEFAULT_WORLDS_DIR
+    world_upload_max_bytes: int = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024
+    world_upload_max_files: int = DEFAULT_MAX_UPLOAD_FILES
     # On the manager-owned `valheim-manager-state` volume, mode 0600.
     state_file: str = "/srv/state/manager-state.json"
     # Only used to print a clickable setup URL; the manager never calls itself.
@@ -205,6 +239,15 @@ def config_from_env() -> AppConfig:
         config_volume=os.environ.get("VALHEIM_CONFIG_VOLUME", "valheim-config"),
         data_volume=os.environ.get("VALHEIM_DATA_VOLUME", "valheim-data"),
         env_file=os.environ.get("VALHEIM_ENV_FILE", AppConfig.env_file),
+        worlds_dir=os.environ.get("VALHEIM_WORLDS_DIR", AppConfig.worlds_dir),
+        world_upload_max_bytes=_env_int(
+            "WORLD_UPLOAD_MAX_MB", DEFAULT_MAX_UPLOAD_MB, minimum=1
+        )
+        * 1024
+        * 1024,
+        world_upload_max_files=_env_int(
+            "WORLD_UPLOAD_MAX_FILES", DEFAULT_MAX_UPLOAD_FILES, minimum=2
+        ),
         state_file=os.environ.get("MANAGER_STATE_FILE", AppConfig.state_file),
         manager_url=os.environ.get("MANAGER_URL", "").strip(),
         restart_policy=os.environ.get("VALHEIM_RESTART_POLICY", "unless-stopped"),
@@ -333,11 +376,20 @@ def create_app(
     controller: DockerControl | None = None,
     settings: SettingsStore | None = None,
     state_store: StateStore | None = None,
+    worlds: WorldStore | None = None,
 ) -> FastAPI:
     _configure_logging()
     config = config or config_from_env()
     store = settings or SettingsStore(config.env_file)
     states = state_store or StateStore(config.state_file)
+    # The store owns both upload limits from here on: the route, the payload and the
+    # panel all read them off it, so an injected store cannot enforce one number while
+    # the page states another.
+    world_store = worlds or WorldStore(
+        config.worlds_dir,
+        max_upload_bytes=config.world_upload_max_bytes,
+        max_upload_files=config.world_upload_max_files,
+    )
 
     auth, credential_source = _resolve_credentials(config, states)
 
@@ -383,6 +435,7 @@ def create_app(
     app.state.control = control
     app.state.settings = store
     app.state.state_store = states
+    app.state.worlds = world_store
 
     templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
@@ -507,6 +560,13 @@ def create_app(
                 "modifier_categories": MODIFIER_CATEGORIES,
                 "modifier_toggles": MODIFIER_TOGGLES,
                 "modifier_labels": MODIFIER_LABELS,
+                # The worlds panel states its own caps and says where the worlds live,
+                # all from the store that will actually enforce them.
+                "worlds_dir": str(world_store.root),
+                "max_upload_bytes": world_store.max_upload_bytes,
+                "max_upload_human": human_size(world_store.max_upload_bytes),
+                "max_upload_files": world_store.max_upload_files,
+                "legacy_warning": LEGACY_WARNING,
             },
         )
 
@@ -821,7 +881,19 @@ def create_app(
         # Keys only, never values: the join password is one of them.
         log.info("Settings panel updated %s in %s.", ", ".join(sorted(updates)), store.path)
 
-        changed = sorted(updates)
+        return _recreate_after_write(sorted(updates), _settings_payload)
+
+    def _recreate_after_write(
+        changed: list[str], payload_for: Any, *, saved_line: str | None = None
+    ) -> JSONResponse:
+        """Remove the stopped container, then answer with the panel's own refresh.
+
+        The last step of every write to the settings file, shared by the settings panel
+        and the world switch, because it is the step that makes a saved value real:
+        ``start()`` creates a container only when none exists, so a file written with
+        the old container still around is a change the next Start silently ignores.
+        """
+        saved = saved_line or f"Saved {', '.join(changed)}."
         try:
             removed = control.remove_stopped_container()
         except DockerControlError as exc:
@@ -835,11 +907,10 @@ def create_app(
                 f"(`docker rm {config.container_name}` on the host)."
             )
             payload.update(
-                _settings_payload(saved=True, changed=changed, container_removed=False)
+                payload_for(saved=True, changed=changed, container_removed=False)
             )
             return JSONResponse(payload, status_code=502)
 
-        saved = f"Saved {', '.join(changed)}."
         message = (
             f"{saved} The stopped container was removed, so the next Start creates a new "
             "one with these values. The world, the backups and the server install live "
@@ -850,7 +921,7 @@ def create_app(
             "one with these values."
         )
         return JSONResponse(
-            _settings_payload(
+            payload_for(
                 saved=True, changed=changed, container_removed=removed, message=message
             )
         )
@@ -862,6 +933,329 @@ def create_app(
         # The body is parsed inside _save_settings, in the threadpool, so that a
         # rejected field answers with the same refreshed payload as every other refusal.
         return await run_in_threadpool(_save_settings, await _json_body(request))
+
+    # ---------------------------------------------------------- worlds panel
+
+    def _worlds_payload(**extra: Any) -> dict[str, Any]:
+        """The worlds on the volume, the active one marked, plus the upload cap.
+
+        An unreadable volume is reported as ``worlds_error`` rather than raised: the
+        panel has to render, and a mount the operator can fix is not a reason to take
+        the rest of the dashboard down with it.
+        """
+        try:
+            active = store.read().get("WORLD_NAME", "")
+        except SettingsFileError:
+            # Already surfaced as `settings_error` by the panel refresh; here it only
+            # means the manager cannot say which world is active.
+            active = ""
+        worlds_error: str | None = None
+        rows: list[dict[str, Any]] = []
+        try:
+            rows = [
+                world.as_dict(active=world.name == active) for world in world_store.worlds()
+            ]
+        except WorldError as exc:
+            worlds_error = str(exc)
+        return {
+            "worlds": rows,
+            "active_world": active,
+            "worlds_error": worlds_error,
+            "worlds_dir": str(world_store.root),
+            "max_upload_bytes": world_store.max_upload_bytes,
+            # Formatted here rather than in the browser: two size formatters would be
+            # two chances to state a different limit from the one enforced.
+            "max_upload": human_size(world_store.max_upload_bytes),
+            "max_upload_files": world_store.max_upload_files,
+            **extra,
+        }
+
+    def _world_panel(**extra: Any) -> dict[str, Any]:
+        """One refresh shape for every world answer: the settings panel's, plus worlds.
+
+        A switch writes ``WORLD_NAME`` and removes the container, so the settings table
+        and the status badge both move underneath the operator -- sending the whole
+        panel back is what keeps the two halves of the page from disagreeing.
+        """
+        payload = _settings_payload()
+        payload.update(_worlds_payload())
+        payload.update(extra)
+        return payload
+
+    def _world_refused(status_code: int, error: str, **extra: Any) -> JSONResponse:
+        payload: dict[str, Any] = {"error": error, **extra}
+        payload.update(_world_panel(saved=False))
+        return JSONResponse(payload, status_code=status_code)
+
+    def _upload_refused(status_code: int, error: str) -> JSONResponse:
+        """A refused upload, logged as well as answered.
+
+        Without this the whole upload path is silent on the host: a rejected traversal
+        entry, a symlink in an archive, or a run of oversize attempts would produce one
+        JSON error in one browser and no trace anywhere else -- the one part of this
+        panel's threat model with no audit trail.
+        """
+        log.warning("World upload refused (%s): %s", status_code, error)
+        return _world_refused(status_code, error)
+
+    def _world_action_blocked() -> JSONResponse | None:
+        """The gate both world actions share, or ``None`` when the server is off.
+
+        Re-checked server-side on every call and, for an upload, again just before the
+        volume is touched: the browser's view of the phase is up to a poll interval old
+        and a few hundred megabytes take longer than that to arrive.
+        """
+        try:
+            reason = control.running_reason()
+        except DockerControlError as exc:
+            return _world_refused(
+                502,
+                f"{exc.message} Nothing was changed: the manager could not confirm the "
+                "server is stopped.",
+                docker_error=exc.docker_message,
+            )
+        if reason:
+            return _world_refused(409, reason)
+        return None
+
+    @app.get("/api/worlds")
+    async def api_worlds(request: Request) -> JSONResponse:
+        require_session(request)
+        # Not pushed with the status: listing walks the volume, and doing that every
+        # couple of seconds per open tab is a cost the panel does not need to pay.
+        return JSONResponse(await run_in_threadpool(_worlds_payload))
+
+    def _switch_world(body: dict[str, Any]) -> JSONResponse:
+        """Point ``WORLD_NAME`` at an existing world, through the settings path.
+
+        Same order as a settings save, for the same reasons: prove the server is off,
+        validate, write, remove the stopped container. Nothing is written until every
+        check has passed.
+        """
+        raw = body.get("name")
+        if not isinstance(raw, str):
+            return _world_refused(400, "Say which world to load: send its name.")
+        try:
+            name = sanitised_world_name(raw)
+        except WorldError as exc:
+            return _world_refused(400, str(exc))
+
+        blocked = _world_action_blocked()
+        if blocked is not None:
+            return blocked
+
+        # Only a world that is actually on the volume. Pointing WORLD_NAME at a name
+        # that does not exist is how the next Start generates a *brand new* world with
+        # a new seed, which is never what picking one off this list meant.
+        try:
+            known = world_store.worlds()
+        except WorldError as exc:
+            return _world_refused(500, str(exc))
+        if not any(world.name == name for world in known):
+            return _world_refused(
+                404,
+                f"There is no world called {name!r} in {world_store.root}. Nothing was "
+                "changed -- refresh the panel, or upload the world first.",
+            )
+
+        try:
+            current = store.read()
+        except SettingsFileError as exc:
+            return _world_refused(500, str(exc))
+        try:
+            # The same validator the wizard and the settings panel use, so a world name
+            # the panel would refuse cannot get in by this door instead.
+            values = validated_settings({"WORLD_NAME": name}, current=current)
+        except SetupInputError as exc:
+            return _world_refused(400, str(exc))
+
+        if current.get("WORLD_NAME", "") == values["WORLD_NAME"]:
+            return JSONResponse(
+                _world_panel(
+                    saved=True,
+                    changed=[],
+                    container_removed=False,
+                    message=f"{name} is already the world the server loads.",
+                )
+            )
+        try:
+            format_env_value("WORLD_NAME", values["WORLD_NAME"])
+        except SettingsFileError as exc:
+            return _world_refused(400, str(exc))
+        try:
+            store.write(values)
+        except SettingsFileError as exc:
+            return _world_refused(500, str(exc))
+        log.info("Worlds panel set WORLD_NAME to %r in %s.", name, store.path)
+        return _recreate_after_write(
+            ["WORLD_NAME"], _world_panel, saved_line=f"The server will now load {name}."
+        )
+
+    @app.post("/api/worlds/switch")
+    async def api_world_switch(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_switch_world, await _json_body(request))
+
+    def _place_upload(
+        parts: list[tuple[str, Any, int]], requested_name: str
+    ) -> JSONResponse:
+        """Validate an upload completely, then place it. Blocking, so: threadpool.
+
+        Every refusal here happens before anything is written -- ``place`` is the only
+        statement that touches the volume, and it stages and renames rather than
+        writing a world's name into existence a file at a time.
+        """
+        cap = world_store.max_upload_bytes
+        if not parts:
+            return _upload_refused(
+                400,
+                "Nothing was uploaded. Drop a world folder, a .zip of one, or a "
+                "pre-1.0 .db and .fwl pair.",
+            )
+        # The parser has spooled the body to its own temp files by now, so this is the
+        # authoritative size check; the Content-Length one above only spares us reading
+        # a body that was hopeless from the start.
+        total = sum(size for _, _, size in parts)
+        if total > cap:
+            return _upload_refused(413, oversize_message(total, cap))
+
+        try:
+            name = sanitised_world_name(requested_name) if requested_name.strip() else ""
+        except WorldError as exc:
+            return _upload_refused(400, str(exc))
+
+        try:
+            with opened_upload(parts) as (members, suggested):
+                declared = sum(member.size for member in members)
+                if declared > cap:
+                    # An archive's own directory claims these sizes; `place` counts the
+                    # bytes that actually arrive as well.
+                    raise WorldTooLargeError(oversize_message(declared, cap))
+                plan = plan_upload(
+                    members, requested_name=name, suggested_name=suggested
+                )
+                world_store.refuse_collision(plan.name)
+                # The last gate before the volume is touched: reading the body took
+                # real time, and a Start in another tab must not be overtaken here.
+                blocked = _world_action_blocked()
+                if blocked is not None:
+                    log.warning("World upload refused: the server is not stopped.")
+                    return blocked
+                world = world_store.place(plan)
+        # One condition, one status, whichever of the two checks caught it: the same
+        # clash answered 409 from the pre-check and 400 from inside `place` before
+        # these types existed, purely on timing.
+        except WorldCollisionError as exc:
+            return _upload_refused(409, str(exc))
+        except WorldTooLargeError as exc:
+            return _upload_refused(413, str(exc))
+        except WorldError as exc:
+            return _upload_refused(400, str(exc))
+
+        message = (
+            f"Uploaded {world.name} ({world.layout} layout, "
+            f"{human_size(world.size_bytes)}). Switch to it to have the next Start "
+            "load it."
+        )
+        return JSONResponse(
+            _world_panel(
+                uploaded=True,
+                name=world.name,
+                layout=world.layout,
+                warning=LEGACY_WARNING if world.legacy else None,
+                message=message,
+            )
+        )
+
+    async def _refuse_before_body(
+        request: Request, status_code: int, error: str
+    ) -> JSONResponse:
+        """Refuse a request whose body has not been read, having first drained it.
+
+        Answering while the client is still sending makes most ASGI servers reset the
+        connection, and the browser then reports a transport failure instead of the
+        refusal this route took care to word. Draining discards the body chunk by
+        chunk and never puts a byte of it on the volume, so "refused before the volume
+        is touched" is still exactly what happens.
+        """
+        try:
+            async for _chunk in request.stream():
+                pass
+        except ClientDisconnect:  # pragma: no cover - the client gave up first
+            pass
+        return await run_in_threadpool(_upload_refused, status_code, error)
+
+    @app.post("/api/worlds/upload")
+    async def api_world_upload(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        cap = world_store.max_upload_bytes
+        # Before a byte is read: a body that cannot possibly fit is refused outright, so
+        # an oversized drop never reaches any disk -- not even the temp file the
+        # multipart parser would otherwise spool it to. That promise only holds if the
+        # size is actually declared, so an undeclared one is refused rather than quietly
+        # skipping the gate. The slack is the multipart envelope, which only ever makes
+        # the body bigger than the world inside it.
+        declared = request.headers.get("content-length", "")
+        if not declared.isdigit():
+            return await _refuse_before_body(
+                request,
+                411,
+                "That upload did not say how big it is. The manager checks the size "
+                "before reading anything, so it needs a Content-Length header. Nothing "
+                "was written.",
+            )
+        if int(declared) > cap + _MULTIPART_ENVELOPE_SLACK:
+            return await _refuse_before_body(
+                request, 413, oversize_message(int(declared), cap)
+            )
+        # Blocking Docker and file I/O, so off the event loop: a hung socket proxy here
+        # would otherwise stall every open tab's log stream, not just this upload.
+        blocked = await run_in_threadpool(_world_action_blocked)
+        if blocked is not None:
+            log.warning("World upload refused: the server is not stopped.")
+            try:
+                async for _chunk in request.stream():
+                    pass
+            except ClientDisconnect:  # pragma: no cover
+                pass
+            return blocked
+        try:
+            async with request.form(
+                max_files=world_store.max_upload_files, max_fields=MAX_UPLOAD_FIELDS
+            ) as form:
+                requested = form.get("name")
+                parts: list[tuple[str, Any, int]] = []
+                for _field, value in form.multi_items():
+                    if isinstance(value, UploadFile):
+                        parts.append((value.filename or "", value.file, _part_size(value)))
+                return await run_in_threadpool(
+                    _place_upload,
+                    parts,
+                    requested if isinstance(requested, str) else "",
+                )
+        # Starlette turns MultiPartException into an HTTPException whenever the scope
+        # carries an app -- which FastAPI always sets -- so catching only the former
+        # would send this guidance nowhere and answer in FastAPI's `detail` shape
+        # instead of the refreshed panel every other refusal returns.
+        except (MultiPartException, HTTPException) as exc:
+            detail = getattr(exc, "message", None) or getattr(exc, "detail", "") or str(exc)
+            return await run_in_threadpool(
+                _upload_refused,
+                400,
+                f"That upload could not be read: {detail} A 1.0 world holds one file "
+                f"per map chunk and the manager accepts at most "
+                f"{world_store.max_upload_files} files in one upload, so zip the "
+                "world's folder and upload the .zip instead -- an archive is one file "
+                "whatever the world's size. Nothing was written.",
+            )
+        except ClientDisconnect:
+            # The browser went away mid-upload. Nothing was written -- placement only
+            # happens after the whole body is in -- and nobody is left to read this.
+            return await run_in_threadpool(
+                _upload_refused, 400, "The upload was interrupted. Nothing was written."
+            )
 
     async def _run_action(fn) -> JSONResponse:
         try:
@@ -973,6 +1367,25 @@ def create_app(
             await asyncio.sleep(config.log_poll_seconds)
 
     return app
+
+
+def _part_size(upload: UploadFile) -> int:
+    """How many bytes a multipart part actually carried.
+
+    ``UploadFile.size`` is set by the parser, but it is the one number the size cap
+    rests on, so a parser that ever stops setting it must fall back to measuring
+    rather than silently counting the part as nothing.
+    """
+    if upload.size is not None:
+        return upload.size
+    try:  # pragma: no cover - every supported Starlette sets .size
+        here = upload.file.tell()
+        upload.file.seek(0, os.SEEK_END)
+        size = upload.file.tell()
+        upload.file.seek(here)
+        return size
+    except (OSError, ValueError):
+        return 0
 
 
 def _udp_ports(store: SettingsStore) -> list[int]:
