@@ -2,3 +2,8 @@
 **/__pycache__/
 **/*.pyc
 .pytest_cache/
+
+# Tests stay in the repo (they pin real bugs -- see the docker-py kwarg check) but
+# have no business in a network-exposed runtime image.
+app/tests/
+requirements-dev.txt

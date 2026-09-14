@@ -461,8 +461,9 @@ docker rm valheim-server          # or "$VALHEIM_CONTAINER_NAME" if you changed 
 Start then creates a new container from the edited file. `docker rm` refuses a running
 container, which is why step 2 has to finish first.
 
-(A manual "Backup now" button, mod toggles, admin/ban-list editing, and backup restore
-are all deferred: see `_bmad-output/implementation-artifacts/deferred-work.md`.)
+(Not built yet: a "Backup now" button, mod toggles, admin/ban-list editing, backup
+browse and restore, and world upload — which is also the only way to choose a world
+seed, since the dedicated server takes no seed argument.)
 
 The image keeps taking its own hourly world backups into `/config/backups` on the
 `valheim-config` volume regardless.
