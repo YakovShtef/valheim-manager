@@ -4681,11 +4681,35 @@ def test_the_env_example_documents_the_shared_group_and_the_caps(project_root):
 
 def test_the_readme_covers_switching_uploading_and_the_group(project_root):
     readme = (project_root / "README.md").read_text(encoding="utf-8")
-    assert "## Worlds: list, switch, and upload" in readme
+    assert "Worlds: switching and adding new ones" in readme
     assert "MANAGER_GID" in readme and "PGID" in readme
     assert "seed" in readme
     assert "permanently" in readme
     assert "WORLD_UPLOAD_MAX_MB" in readme
+
+
+def test_the_readme_leads_with_the_things_a_first_time_host_gets_wrong(project_root):
+    """The README was rewritten for someone who has never used Docker, and the risk of
+    that rewrite is losing a warning along with the jargon it was buried in. These are
+    the four that cost real money or a real world if they go missing."""
+    readme = (project_root / "README.md").read_text(encoding="utf-8")
+    quick_start, _, rest = readme.partition("Advanced / Under the hood")
+    assert rest, "the deep material should sit under an Advanced section"
+
+    # Which ports to forward -- and which one NOT to.
+    assert "2456" in quick_start and "2457" in quick_start and "2458" in quick_start
+    assert "8080" in quick_start
+
+    # A public host is reachable the moment it starts. This one is why the section
+    # exists at all, so it belongs above the fold, not in the deep end.
+    assert "MANAGER_BIND=127.0.0.1" in quick_start
+    assert "VPS" in quick_start
+
+    # No lockout, so the password length is the whole defence.
+    assert "no lockout" in quick_start.lower()
+
+    # The two passwords are not interchangeable, which is the commonest setup mistake.
+    assert "Admin password" in quick_start and "Join password" in quick_start
 
 
 # ------------------------------------------------- the module's own edge cases
