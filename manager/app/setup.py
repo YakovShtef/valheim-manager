@@ -179,7 +179,7 @@ class SetupSession:
         if len(password) < MIN_PASSWORD_LENGTH:
             raise SetupInputError(
                 f"The admin password must be at least {MIN_PASSWORD_LENGTH} characters. "
-                "This login controls the Docker-backed manager, and it has no rate "
+                "This login controls your whole server, and nothing slows down "
                 "limiting, so a short password is the whole exposure."
             )
         if "\n" in password or "\r" in password:
@@ -264,7 +264,7 @@ def validated_settings(
             raise SetupInputError("Give the world a name.")
         if "/" in world or "\\" in world:
             raise SetupInputError(
-                "The world name is a save file name under /config/worlds_local, so it "
+                "The world name is a save file name, so it "
                 "cannot contain a slash."
             )
 
@@ -278,7 +278,7 @@ def validated_settings(
         # is why the range stops short of 65535.
         if not 1 <= port <= 65533:
             raise SetupInputError(
-                "The game port must be between 1 and 65533 -- the query port (+1) and "
+                "The game port must be between 1 and 65533 -- Valheim also uses "
                 "the crossplay port (+2) have to fit above it."
             )
         values["SERVER_PORT"] = str(port)
@@ -287,7 +287,7 @@ def validated_settings(
     if join_password is not None and len(join_password) < MIN_SERVER_PASS_LENGTH:
         raise SetupInputError(
             f"The join password must be at least {MIN_SERVER_PASS_LENGTH} characters. "
-            "The Valheim server refuses to start without one, so leaving it empty "
+            "Valheim will not start without one, so leaving it empty "
             "would mean Start produced a container that exits immediately."
         )
 
@@ -301,7 +301,7 @@ def validated_settings(
         )
         if effective_name and effective_pass and effective_pass.lower() in effective_name.lower():
             raise SetupInputError(
-                "The join password cannot appear inside the server name; the Valheim "
+                "The join password cannot appear inside the server name -- Valheim "
                 "server refuses to start in that case."
             )
 

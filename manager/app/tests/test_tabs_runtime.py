@@ -60,6 +60,7 @@ CASES = [
     "blocked_storage_still_leaves_a_usable_dashboard",
     "the_keyboard_walks_the_strip",
     "exactly_one_panel_is_ever_visible",
+    "the_settings_table_shows_plain_names",
     "every_panel_can_take_focus",
     "a_panel_error_survives_a_switch_and_is_marked_in_the_strip",
     "an_upload_in_flight_is_marked_in_the_strip",

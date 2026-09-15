@@ -30,9 +30,11 @@ const CLIENT_HEIGHT = 300;
 
 // The shape the manager actually pushes (settings_store.display_settings).
 const SETTINGS_ROWS = [
-  { key: "SERVER_NAME", value: "My Server", secret: false },
-  { key: "SERVER_PASS", value: "********", secret: true },
-  { key: "SERVER_PORT", value: "2456", secret: false },
+  { key: "SERVER_NAME", label: "Server name", value: "My Server", secret: false },
+  { key: "SERVER_PASS", label: "Join password", value: "********", secret: true },
+  { key: "SERVER_PORT", label: "Game port", value: "2456", secret: false },
+  // A key the manager has no plain name for: it arrives with its own name as label.
+  { key: "MY_OWN_KEY", label: "MY_OWN_KEY", value: "42", secret: false },
 ];
 
 function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
@@ -337,6 +339,15 @@ check("exactly_one_panel_is_ever_visible", () => {
     p.tab(name).click();
     eq(p.shown(), ["panel-" + name], `visible panels after selecting ${name}`);
   }
+});
+
+check("the_settings_table_shows_plain_names", () => {
+  // The editor's labels and the read-only table used to disagree about what the same
+  // row was called. The manager names each setting now; the table has to use it.
+  const p = makePage();
+  p.status("ready");
+  const names = [...p.doc.querySelectorAll("#settings-table tbody tr th")].map((th) => th.textContent);
+  eq(names, ["Server name", "Join password", "Game port", "MY_OWN_KEY"], "the row names");
 });
 
 check("every_panel_can_take_focus", () => {

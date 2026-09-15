@@ -210,15 +210,16 @@ reload — anything unrecognised lands on Console. Left and Right (and Home / En
 move along the strip, Enter or Space activates, and each panel can take focus itself
 so the keyboard reaches a panel whose controls are all locked.
 
-*Running* and *ready* are different facts and the UI never conflates them:
+*Loading world* and *ready* are different facts and the UI never conflates them:
 
-- **running (not yet ready)** — the container is up; the world is still loading.
-- **ready** — the server printed its own `Game server connected` line on stdout.
-  Only then is it accepting players.
+- **loading world** — the server is up, but the world is still loading. Nobody can
+  join yet.
+- **ready** — the server printed its own `Game server connected` line. Only then is
+  it accepting players.
 
-If that line never arrives, the badge stays on *running (not yet ready)* instead of
-claiming readiness. If a game update changes the wording, set `READY_LOG_PATTERN`
-in `.env` to a regex that matches the new line.
+If that line never arrives, the badge stays on *loading world* instead of claiming
+readiness. If a game update changes the wording, set `READY_LOG_PATTERN` in `.env`
+to a regex that matches the new line.
 
 The console backfills the last 200 lines and appends new ones within about a
 second. If the WebSocket drops, it reconnects on its own (exponential backoff up to

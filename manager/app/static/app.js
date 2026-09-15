@@ -68,17 +68,19 @@
     clear: document.getElementById("btn-clear")
   };
 
+  // What the operator sees on the badge. Plain words: "no container" and "pulling
+  // image" are true but they describe Docker's world, not the player's.
   var PHASES = {
-    absent:   { label: "no container", cls: "badge-stopped" },
-    stopped:  { label: "stopped",      cls: "badge-stopped" },
-    pulling:  { label: "pulling image", cls: "badge-busy" },
-    creating: { label: "creating",     cls: "badge-busy" },
+    absent:   { label: "off",          cls: "badge-stopped" },
+    stopped:  { label: "off",          cls: "badge-stopped" },
+    pulling:  { label: "downloading",  cls: "badge-busy" },
+    creating: { label: "setting up",   cls: "badge-busy" },
     starting: { label: "starting",     cls: "badge-busy" },
     stopping: { label: "stopping",     cls: "badge-busy" },
-    running:  { label: "running (not yet ready)", cls: "badge-running" },
+    running:  { label: "loading world", cls: "badge-running" },
     ready:    { label: "ready",        cls: "badge-ready" },
     paused:   { label: "paused",       cls: "badge-stopped" },
-    error:    { label: "error",        cls: "badge-error" }
+    error:    { label: "problem",      cls: "badge-error" }
   };
 
   var busyPhases = { pulling: 1, creating: 1, starting: 1, stopping: 1 };
@@ -329,23 +331,22 @@
   function lockReason(status, readOnly, action) {
     if (OFF_PHASES[status.phase]) { return null; }
     if (status.phase === "error") {
-      return "The manager cannot reach Docker, so it cannot tell whether the server is" +
-        " running. " + readOnly + " until it can.";
+      return "Cannot reach Docker, so there is no way to tell whether your server is" +
+        " running. " + readOnly + " until that is sorted out.";
     }
     var label = (PHASES[status.phase] || PHASES.error).label;
-    return "The server is " + label + ". Stop it before " + action + ".";
+    // One shape for every phase. "It is stopping right now" reads oddly next to
+    // "stop it first", so the sentence leads with the rule instead.
+    return "You can only " + action + " while the server is off. It is " + label +
+      " right now.";
   }
 
   function settingsLockReason(status) {
-    return lockReason(status, "Settings stay read-only",
-      "changing settings: an existing container keeps the environment it was created" +
-      " with, so a new value could not take effect anyway");
+    return lockReason(status, "Settings stay read-only", "change these settings");
   }
 
   function worldsLockReason(status) {
-    return lockReason(status, "The worlds panel stays read-only",
-      "switching or uploading a world: the running server holds its world open and" +
-      " saves to it continuously");
+    return lockReason(status, "Worlds stay read-only", "switch or upload a world");
   }
 
   function syncSettingsControls() {
@@ -358,7 +359,7 @@
       // half-written server name and a retyped join password.
       draft = { settings: collectSettings(), modifiers: collectModifiers() };
       editing = false;
-      system("settings editor closed, your changes are kept — " + reason);
+      system("settings editor closed — your changes are still here");
     }
     // Without rows there is nothing to prefill from, and an editor opened on a settings
     // error would offer to save six empty fields.
@@ -429,12 +430,12 @@
     if (!el.modifierPreview) { return; }
     var composed = composedModifiers();
     el.modifierPreview.textContent =
-      composed || "(empty — every modifier is at Valheim's default)";
+      composed || "(nothing — everything is on Valheim's default)";
     el.modifierPreview.className = composed ? "snippet" : "snippet is-empty";
     if (el.modifierUnmanaged) {
       el.modifierUnmanaged.textContent = unmanagedArgs()
-        ? "Kept from the current SERVER_ARGS and left after the modifiers, because " +
-          "these are not modifiers the panel manages: " + unmanagedArgs()
+        ? "Kept as it is — these are extra options you set yourself, and this page " +
+          "leaves them alone: " + unmanagedArgs()
         : "";
       el.modifierUnmanaged.hidden = !unmanagedArgs();
     }
@@ -571,7 +572,8 @@
     el.settings.innerHTML = html;
     var trs = el.settings.querySelectorAll("tr");
     for (var j = 0; j < rows.length; j++) {
-      trs[j].children[0].textContent = rows[j].key;
+      // The manager names each setting; a key it has no name for is shown as itself.
+      trs[j].children[0].textContent = rows[j].label || rows[j].key;
       trs[j].children[1].textContent = rows[j].value;
     }
     el.settings.setAttribute("data-signature", signature);
@@ -712,7 +714,7 @@
       if (payload) { renderWorlds(payload); }
       return payload;
     }).catch(function (err) {
-      showError("Could not list the worlds: " + err, "worlds");
+      showError("Could not read the list of worlds: " + err, "worlds");
       return null;
     });
   }
@@ -897,8 +899,8 @@
         // Dropped text, a link, or something the browser will not hand over as a file.
         // Keeping the current selection matters: silently emptying it looks like the
         // drop worked.
-        showError("That drop contained nothing the manager could read as a file. " +
-          "Drop the world's folder, a .zip of it, or a .db and .fwl pair.", "worlds");
+        showError("There were no files in that drop. Drop the world's folder, a .zip of " +
+          "it, or a .db and .fwl pair.", "worlds");
         return;
       }
       setSelection(plain);
@@ -1011,7 +1013,8 @@
       uploading = false;
       uploadRequest = null;
       el.uploadProgress.hidden = true;
-      showError("The upload could not reach the manager.", "worlds");
+      showError("The upload did not get through. Check your connection and try again.",
+        "worlds");
       syncWorldControls();
     };
     request.onabort = function () {
@@ -1020,7 +1023,7 @@
       el.uploadProgress.hidden = true;
       // Nothing is written until the whole body is in, so an aborted upload leaves the
       // volume untouched -- worth saying, since the operator just cancelled a transfer.
-      system("upload cancelled — nothing was written");
+      system("upload cancelled — nothing was saved");
       syncWorldControls();
     };
     request.send(body);
@@ -1060,7 +1063,7 @@
     socket.onopen = function () {
       backoff = RECONNECT_MIN_MS;
       setLink("live");
-      if (everConnected) { system("reconnected, backfilling recent log"); }
+      if (everConnected) { system("reconnected — catching up on the log"); }
       everConnected = true;
     };
 
@@ -1134,7 +1137,7 @@
         return payload;
       });
     }).catch(function (err) {
-      showError("Could not reach the manager: " + err);
+      showError("Lost contact with the manager: " + err);
       return null;
     }).then(function (payload) {
       // Clear the flag BEFORE re-rendering, or every button stays disabled and a

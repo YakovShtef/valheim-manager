@@ -8,13 +8,12 @@
 <section class="card login-card">
   <h1>Setup link not valid</h1>
   <p class="muted">
-    First-run setup needs the one-time link printed in the manager's own log. Get it
-    with:
+    Setup needs the one-time link from the manager's log. Print it with:
   </p>
   <pre class="snippet">docker compose logs manager</pre>
   <p class="muted">
-    Look for the <strong>FIRST-RUN SETUP REQUIRED</strong> banner. A manager restart
-    replaces the link, so use the most recent one.
+    Look for the <strong>FIRST-RUN SETUP REQUIRED</strong> banner, and use the newest
+    link &mdash; restarting the manager makes a fresh one.
   </p>
 </section>
 
@@ -22,9 +21,8 @@
 <section class="card setup-card">
   <h1>Set up the Valheim manager</h1>
   <p class="muted">
-    Nothing is configured yet. This page runs once: it creates the single admin
-    account, generates the manager's own session secret, and writes the initial game
-    settings. Afterwards it closes permanently and this link stops working.
+    You only see this page once. It creates your admin login and your first game
+    settings, then closes for good and this link stops working.
   </p>
 
   {% if error %}<p class="banner banner-error" role="alert">{{ error }}</p>{% endif %}
@@ -34,9 +32,9 @@
 
     <h2>Manager sign-in</h2>
     <p class="muted small">
-      This login controls Docker on this host, so treat it as root-equivalent. It is
-      stored hashed, on a volume only the manager can read &mdash; you never edit a
-      file to set it.
+      This is how you sign in to the manager, and it controls your whole server, so
+      pick a strong password. It is never stored as plain text, and you never have to
+      edit a file to set it.
     </p>
 
     <label for="admin_user">Admin username</label>
@@ -53,8 +51,8 @@
            autocomplete="new-password" minlength="{{ min_password_length }}">
 
     <p class="muted small">
-      At least {{ min_password_length }} characters. There is no login rate limiting,
-      so length is the whole defence.
+      At least {{ min_password_length }} characters. Nothing slows down repeated
+      guesses, so length is what keeps it safe.
     </p>
 
     <fieldset class="algo">
@@ -62,22 +60,19 @@
       <label class="radio">
         <input type="radio" name="hash_algo" value="bcrypt"
                {% if values.hash_algo != 'argon2' %}checked{% endif %}>
-        bcrypt <span class="muted">&mdash; the default; only the first 72 bytes of a
-        passphrase count</span>
+        bcrypt <span class="muted">&mdash; the normal choice</span>
       </label>
       <label class="radio">
         <input type="radio" name="hash_algo" value="argon2"
                {% if values.hash_algo == 'argon2' %}checked{% endif %}>
-        argon2 <span class="muted">&mdash; choose this for a passphrase longer than
-        72 bytes</span>
+        argon2 <span class="muted">&mdash; pick this if your password is longer
+        than 72 characters</span>
       </label>
     </fieldset>
 
     <h2>Initial game settings</h2>
     <p class="muted small">
-      Written to the settings file the game container reads. You own that file from
-      here on &mdash; the manager only ever replaces the values of these keys and
-      leaves your comments and any other keys alone.
+      You can change all of these later from the dashboard.
     </p>
 
     <label for="server_name">Server name</label>
@@ -92,15 +87,15 @@
     <input id="server_pass" name="server_pass" type="text" autocomplete="off"
            required minlength="5" value="{{ values.server_pass | default('', true) }}">
     <p class="muted small">
-      What players type to join &mdash; not your manager password. Required, at least
-      5 characters, and it must not appear inside the server name: the Valheim server
-      refuses to start otherwise, and there is no passwordless option.
+      What your friends type to join &mdash; not the password above. At least 5
+      characters, and it cannot be part of the server name. Valheim always wants one.
     </p>
 
     <label for="server_port">Game port (UDP)</label>
     <input id="server_port" name="server_port" type="number" min="1" max="65533"
            value="{{ values.server_port | default('2456', true) }}">
-    <p class="muted small">The query port (+1) and crossplay port (+2) follow it.</p>
+    <p class="muted small">Leave this alone unless something else is already using
+      it. Valheim quietly uses the next two numbers up as well.</p>
 
     <label class="check">
       <input type="checkbox" name="server_public" value="1"
@@ -114,14 +109,13 @@
     </label>
 
     <p class="banner">
-      <strong>No world exists yet.</strong> Finishing setup writes files only &mdash;
-      it does not start the game server. The world is created by Valheim itself the
-      first time you press <strong>Start</strong> on the dashboard, and its seed is
-      chosen randomly at that moment and fixed from then on: the dedicated server has
-      no option to pick a seed.
+      <strong>You have no world yet.</strong> Finishing here does not start the game.
+      Valheim builds your world the first time you press <strong>Start</strong> on the
+      dashboard, with a random seed you cannot choose. If you want a particular seed,
+      make the world in your own game first and upload it.
     </p>
 
-    <button type="submit" class="primary">Create admin and finish setup</button>
+    <button type="submit" class="primary">Finish setup</button>
   </form>
 </section>
 {% endif %}

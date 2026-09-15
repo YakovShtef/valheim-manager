@@ -542,10 +542,6 @@ def create_app(
                 "settings_error": settings_error,
                 "container_name": config.container_name,
                 "image": config.image,
-                # Named in the panel's own wording: "the world is untouched" is only
-                # believable if it says *where* the world actually lives.
-                "config_volume": config.config_volume,
-                "data_volume": config.data_volume,
                 # The editor spells both of these out to the operator and posts the
                 # first one back untouched, so they come from their definitions rather
                 # than from a copy in the markup that nothing keeps honest.
@@ -862,7 +858,7 @@ def create_app(
                     saved=True,
                     changed=[],
                     container_removed=False,
-                    message="Nothing to save: no value changed.",
+                    message="Nothing to save -- nothing changed.",
                 )
             )
         for key, value in updates.items():
@@ -901,10 +897,9 @@ def create_app(
             # would otherwise reuse the container and its old environment.
             payload = exc.as_dict()
             payload["error"] = (
-                f"{exc.message} The settings file was saved -- the values shown are the "
-                "new ones -- but the existing container still holds the old environment, "
-                "and Start reuses it until it is removed "
-                f"(`docker rm {config.container_name}` on the host)."
+                f"{exc.message} Your settings were saved, but the old server is still "
+                "there and Start would bring it back with the old settings. Remove it "
+                f"with `docker rm {config.container_name}` and press Start."
             )
             payload.update(
                 payload_for(saved=True, changed=changed, container_removed=False)
@@ -912,13 +907,10 @@ def create_app(
             return JSONResponse(payload, status_code=502)
 
         message = (
-            f"{saved} The stopped container was removed, so the next Start creates a new "
-            "one with these values. The world, the backups and the server install live "
-            f"on the {config.config_volume} and {config.data_volume} volumes and were "
-            "not touched."
+            f"{saved} Press Start and your server comes back with the new settings. "
+            "Your world and your backups were not touched."
             if removed
-            else f"{saved} There was no container to remove, so the next Start creates "
-            "one with these values."
+            else f"{saved} Press Start whenever you are ready."
         )
         return JSONResponse(
             payload_for(
@@ -1010,8 +1002,8 @@ def create_app(
         except DockerControlError as exc:
             return _world_refused(
                 502,
-                f"{exc.message} Nothing was changed: the manager could not confirm the "
-                "server is stopped.",
+                f"{exc.message} Nothing was changed -- there was no way to check "
+                "that your server is off.",
                 docker_error=exc.docker_message,
             )
         if reason:
@@ -1034,7 +1026,7 @@ def create_app(
         """
         raw = body.get("name")
         if not isinstance(raw, str):
-            return _world_refused(400, "Say which world to load: send its name.")
+            return _world_refused(400, "Say which world to load.")
         try:
             name = sanitised_world_name(raw)
         except WorldError as exc:
@@ -1054,8 +1046,8 @@ def create_app(
         if not any(world.name == name for world in known):
             return _world_refused(
                 404,
-                f"There is no world called {name!r} in {world_store.root}. Nothing was "
-                "changed -- refresh the panel, or upload the world first.",
+                f"There is no world called {name!r} on the server. Nothing was "
+                "changed -- refresh the list, or upload that world first.",
             )
 
         try:
@@ -1075,7 +1067,7 @@ def create_app(
                     saved=True,
                     changed=[],
                     container_removed=False,
-                    message=f"{name} is already the world the server loads.",
+                    message=f"{name} is already the world your server loads.",
                 )
             )
         try:
@@ -1088,7 +1080,7 @@ def create_app(
             return _world_refused(500, str(exc))
         log.info("Worlds panel set WORLD_NAME to %r in %s.", name, store.path)
         return _recreate_after_write(
-            ["WORLD_NAME"], _world_panel, saved_line=f"The server will now load {name}."
+            ["WORLD_NAME"], _world_panel, saved_line=f"Your server will load {name} next time you start it."
         )
 
     @app.post("/api/worlds/switch")
@@ -1110,8 +1102,8 @@ def create_app(
         if not parts:
             return _upload_refused(
                 400,
-                "Nothing was uploaded. Drop a world folder, a .zip of one, or a "
-                "pre-1.0 .db and .fwl pair.",
+                "Nothing arrived. Drop the world's folder, a .zip of it, or a "
+                ".db and .fwl pair.",
             )
         # The parser has spooled the body to its own temp files by now, so this is the
         # authoritative size check; the Content-Length one above only spares us reading
@@ -1154,9 +1146,8 @@ def create_app(
             return _upload_refused(400, str(exc))
 
         message = (
-            f"Uploaded {world.name} ({world.layout} layout, "
-            f"{human_size(world.size_bytes)}). Switch to it to have the next Start "
-            "load it."
+            f"Uploaded {world.name} ({human_size(world.size_bytes)}). Press Load to "
+            "play it next time you start the server."
         )
         return JSONResponse(
             _world_panel(
@@ -1202,9 +1193,8 @@ def create_app(
             return await _refuse_before_body(
                 request,
                 411,
-                "That upload did not say how big it is. The manager checks the size "
-                "before reading anything, so it needs a Content-Length header. Nothing "
-                "was written.",
+                "That upload did not say how big it was, so it was turned away "
+                "before anything was read. Nothing was saved.",
             )
         if int(declared) > cap + _MULTIPART_ENVELOPE_SLACK:
             return await _refuse_before_body(
@@ -1244,17 +1234,16 @@ def create_app(
             return await run_in_threadpool(
                 _upload_refused,
                 400,
-                f"That upload could not be read: {detail} A 1.0 world holds one file "
-                f"per map chunk and the manager accepts at most "
-                f"{world_store.max_upload_files} files in one upload, so zip the "
-                "world's folder and upload the .zip instead -- an archive is one file "
-                "whatever the world's size. Nothing was written.",
+                f"That upload could not be read: {detail} An explored world is a "
+                f"lot of small files and at most {world_store.max_upload_files} can go "
+                "at once, so zip the world's folder and upload the .zip instead. "
+                "Nothing was saved.",
             )
         except ClientDisconnect:
             # The browser went away mid-upload. Nothing was written -- placement only
             # happens after the whole body is in -- and nobody is left to read this.
             return await run_in_threadpool(
-                _upload_refused, 400, "The upload was interrupted. Nothing was written."
+                _upload_refused, 400, "The upload stopped part-way. Nothing was saved."
             )
 
     async def _run_action(fn) -> JSONResponse:

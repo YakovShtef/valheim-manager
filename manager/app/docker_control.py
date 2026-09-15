@@ -9,7 +9,7 @@ Two things this module is careful about:
 
 * *container running* and *server ready* are different facts. Readiness comes
   only from the Valheim server's own stdout line, so the UI can say
-  "running (not yet ready)" instead of lying.
+  "loading world" instead of lying.
 * a failed first-run start must not leave a half-created container behind.
 """
 
@@ -62,8 +62,8 @@ _IN_FLIGHT_PHASES = (PHASE_PULLING, PHASE_CREATING, PHASE_STARTING, PHASE_STOPPI
 # The advice that follows each reason. They differ on purpose: mid-pull there is
 # nothing running to stop yet, and mid-stop the operator has already asked for it and
 # only has to wait.
-STOP_FIRST = "Stop the server before changing settings."
-WAIT_FIRST = "Wait for it to finish, then try again."
+STOP_FIRST = "Turn the server off first, then try again."
+WAIT_FIRST = "Give it a moment, then try again."
 
 
 class DockerControlError(RuntimeError):

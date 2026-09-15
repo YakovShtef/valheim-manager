@@ -141,8 +141,8 @@ def sanitised_name(raw: str, *, what: str = "world name") -> str:
         raise WorldError(f"The {what} cannot contain control characters.")
     if "/" in name or "\\" in name:
         raise WorldError(
-            f"The {what} is a single save name under the worlds directory, not a path, "
-            "so it cannot contain a slash or a backslash."
+            f"The {what} is one save name, not a path, so it cannot contain a "
+            "slash or a backslash."
         )
     if ":" in name:
         raise WorldError(f"The {what} cannot contain a colon.")
@@ -150,8 +150,8 @@ def sanitised_name(raw: str, *, what: str = "world name") -> str:
         raise WorldError(f"{name!r} is not a {what}.")
     if name.startswith("."):
         raise WorldError(
-            f"The {what} cannot start with a dot: the manager's own staging "
-            "directories are hidden that way and would collide with it."
+            f"The {what} cannot start with a dot -- that is how the manager hides "
+            "its own working folders."
         )
     # Surrounding whitespace was stripped above, so only the dot is left to catch --
     # Windows silently drops a trailing one, which would make `World.` and `World` the
@@ -288,9 +288,8 @@ class WorldStore:
             entries = list(os.scandir(self.root))
         except OSError as exc:
             raise WorldError(
-                f"Could not read the worlds directory {self.root}: {exc}. The manager "
-                "mounts the game's config volume read-write; check that mount and that "
-                "the directory is readable by the manager's group."
+                f"Could not read the worlds folder: {exc}. Check that the manager "
+                "is allowed to read it (MANAGER_GID)."
             ) from exc
 
         found: list[World] = []
@@ -404,10 +403,9 @@ class WorldStore:
             self.root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise WorldError(
-                f"The worlds directory {self.root} does not exist and the manager "
-                f"cannot create it ({exc}) -- the game volume's /config belongs to the "
-                "game server. Press Start once to have the server create it, then "
-                "upload. Nothing was written."
+                "There is no worlds folder yet and the manager is not allowed to "
+                f"make one ({exc}). Press Start once to let Valheim create it, then "
+                "upload. Nothing was saved."
             ) from exc
         _set_mode(self.root, WORLD_DIR_MODE, fallback=WORLD_DIR_MODE_FALLBACK)
 
@@ -425,9 +423,9 @@ class WorldStore:
             staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=self.root))
         except OSError as exc:
             raise WorldError(
-                f"Could not write to the worlds directory {self.root}: {exc}. The game "
-                "server owns it, so it has to be writable by the group the manager "
-                "shares with it (MANAGER_GID). Nothing was written."
+                f"Could not write to the worlds folder: {exc}. Valheim owns that "
+                "folder, so the manager needs to share its group (MANAGER_GID). "
+                "Nothing was saved."
             ) from exc
 
         try:
@@ -501,7 +499,7 @@ def collision_message(name: str, blocking: Sequence[str]) -> str:
     return (
         f"{name!r} is already taken on the volume by {', '.join(blocking)}, and the "
         "manager never overwrites a world -- not even a partial one. Upload it under a "
-        "different name, or remove what is there on the host first. Nothing was written."
+        "different name, or remove what is there on the host first. Nothing was saved."
     )
 
 
@@ -550,7 +548,7 @@ def _resolved_within(base: Path, relative: str) -> Path:
     if resolved != root and root not in resolved.parents:
         raise WorldError(
             f"The upload contains an entry that would be written outside the world "
-            f"directory ({relative!r}). Nothing was written."
+            f"directory ({relative!r}). Nothing was saved."
         )
     return candidate
 
@@ -596,11 +594,11 @@ def oversize_message(size: int | None, cap: int) -> str:
     measured = (
         f"That upload is {human_size(size)}, which is"
         if size is not None
-        else "That upload turned out to hold more than it reported, which puts it"
+        else "That upload held more than it said it would, which puts it"
     )
     return (
-        f"{measured} past the {human_size(cap)} limit on one world upload "
-        "(WORLD_UPLOAD_MAX_MB). Nothing was written."
+        f"{measured} over the {human_size(cap)} limit for one world. Nothing was "
+        "saved. You can raise the limit with WORLD_UPLOAD_MAX_MB."
     )
 
 
@@ -675,23 +673,23 @@ def _entry_segments(raw: str) -> list[str]:
     """
     name = (raw or "").replace("\\", "/")
     if not name.strip():
-        raise WorldError("The upload contains an entry with no name. Nothing was written.")
+        raise WorldError("The upload contains an entry with no name. Nothing was saved.")
     if _CONTROL_RE.search(name):
         raise WorldError(
             f"The upload contains an entry whose name has control characters in it "
-            f"({raw!r}). Nothing was written."
+            f"({raw!r}). Nothing was saved."
         )
     if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
         raise WorldError(
             f"The upload contains an absolute path ({raw!r}), which would be written "
-            "outside the world directory. Nothing was written."
+            "outside the world directory. Nothing was saved."
         )
     segments = [part for part in name.split("/") if part not in ("", ".")]
     if any(part == ".." for part in segments):
         raise WorldError(
             f"The upload contains an entry that climbs out of its own directory "
-            f"({raw!r}), which would be written outside the world directory. Nothing "
-            "was written."
+            f"({raw!r}), which would be written outside the world directory. "
+            "Nothing was saved."
         )
     if not segments:
         raise WorldError(f"The upload contains an unusable entry name ({raw!r}).")
@@ -734,12 +732,12 @@ def members_from_zip(archive: zipfile.ZipFile) -> list[Member]:
         if file_type == stat.S_IFLNK:
             raise WorldError(
                 f"The archive contains a symbolic link ({info.filename!r}). A world is "
-                "files, not links, and a link can point anywhere. Nothing was written."
+                "files, not links, and a link can point anywhere. Nothing was saved."
             )
         if file_type not in (0, stat.S_IFREG, stat.S_IFDIR):
             raise WorldError(
                 f"The archive contains an entry that is not a regular file "
-                f"({info.filename!r}). Nothing was written."
+                f"({info.filename!r}). Nothing was saved."
             )
         if _is_junk(segments):
             continue
@@ -765,7 +763,7 @@ class _ZipEntry:
         except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
             raise WorldError(
                 f"The archive entry {self.info.filename!r} could not be read: {exc}. "
-                "Nothing was written."
+                "Nothing was saved."
             ) from exc
         return self.handle
 
@@ -801,7 +799,7 @@ def opened_upload(
             archive = zipfile.ZipFile(handle)
         except (zipfile.BadZipFile, OSError) as exc:
             raise WorldError(
-                f"{filename} is not a readable zip archive ({exc}). Nothing was written."
+                f"{filename} is not a readable zip archive ({exc}). Nothing was saved."
             ) from exc
         with archive:
             # The leaf, not the path: a browser part named `Backups/Imported.zip`
@@ -896,12 +894,12 @@ def _classify(members: Sequence[Member]) -> tuple[str, str]:
         if not db2:
             raise WorldError(
                 "That looks like a 1.0 world but there is no `_main.N.db2` in it -- "
-                "that file is the world itself. Nothing was written."
+                "that file is the world itself. Nothing was saved."
             )
         if not fwl2:
             raise WorldError(
                 "That looks like a 1.0 world but there is no `_main.N.fwl2` in it -- "
-                "that file holds the world's name and seed. Nothing was written."
+                "that file holds the world's name and seed. Nothing was saved."
             )
         return LAYOUT_MODERN, ""
 
@@ -925,13 +923,13 @@ def _classify(members: Sequence[Member]) -> tuple[str, str]:
             raise WorldError(
                 f"A pre-1.0 world is a matching pair: {have}.db and {have}.fwl. This "
                 f"upload has only the {present} file, so the {missing} one is missing. "
-                "Upload both together. Nothing was written."
+                "Upload both together. Nothing was saved."
             )
         if len(shared) > 1:
             raise WorldError(
                 "That upload holds more than one pre-1.0 world "
                 f"({', '.join(sorted(db[key] for key in shared))}). Upload one at a "
-                "time. Nothing was written."
+                "time. Nothing was saved."
             )
         # The `.db` holds the save data, so its spelling names the world.
         return LAYOUT_LEGACY, db[shared.pop()]
@@ -939,7 +937,7 @@ def _classify(members: Sequence[Member]) -> tuple[str, str]:
     raise WorldError(
         "That is not a Valheim world. A 1.0 world is a folder holding `_main.N.db2` "
         "and `_main.N.fwl2` (drop the folder, or a .zip of it); a pre-1.0 world is a "
-        "matching `.db` and `.fwl` pair. Nothing was written."
+        "matching `.db` and `.fwl` pair. Nothing was saved."
     )
 
 

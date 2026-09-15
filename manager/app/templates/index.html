@@ -47,11 +47,14 @@
      tabindex="0">
   <section class="card">
     <h2>Status</h2>
-    <p id="status-message" class="muted">Waiting for the first status push…</p>
+    <p id="status-message" class="muted">Checking on your server…</p>
     <dl class="kv">
-      <dt>Container</dt><dd id="meta-container">{{ container_name }}</dd>
-      <dt>Image</dt><dd id="meta-image">{{ image }}</dd>
-      <dt>Docker state</dt><dd id="meta-state">–</dd>
+      {# Plain labels for the same four facts. The name is still the one `docker rm`
+         takes, which is why it is on the page at all -- but an operator reading it
+         does not need to be told it is a container to use it. #}
+      <dt>Name</dt><dd id="meta-container">{{ container_name }}</dd>
+      <dt>Game server</dt><dd id="meta-image">{{ image }}</dd>
+      <dt>State</dt><dd id="meta-state">–</dd>
       <dt>Started</dt><dd id="meta-started">–</dd>
     </dl>
     <div class="controls">
@@ -89,14 +92,9 @@
        screen reader would otherwise never hear why Edit went away. #}
     <p id="settings-locked" class="muted small" role="status" aria-live="polite" hidden></p>
     <p class="muted" id="settings-help">
-      The values in <code>settings/valheim.env</code> right now. They can be edited
-      while the server is off: saving writes the file and removes the stopped
-      container, so the next <strong>Start</strong> builds a new one with the new
-      values &mdash; an existing container keeps the environment it was created with,
-      which is why Start or Restart on their own would keep the old settings. Your
-      world, your backups and the server install live in the
-      <code>{{ config_volume }}</code> and <code>{{ data_volume }}</code> volumes and
-      are not touched by any of this.
+      Your server's settings as they are now. Turn the server off to change them, then
+      press <strong>Start</strong> and the new settings take effect. Your world and
+      your backups are never touched.
     </p>
     <table class="settings" id="settings-table">
       <tbody>
@@ -116,23 +114,24 @@
       <label for="field-WORLD_NAME">World name</label>
       <input id="field-WORLD_NAME" name="WORLD_NAME" type="text" required>
       <p class="muted small">
-        The save file name under <code>/config/worlds_local</code>, so no slashes.
-        Pointing it at a name that does not exist yet makes the next Start generate a
-        <em>new</em> world rather than changing the old one, which stays on the volume.
+        The name of your save file &mdash; no slashes. Put in a name you have not used
+        before and Valheim builds a <em>brand-new</em> world next time you start. Your
+        old world is kept, so you can always switch back.
       </p>
 
       <label for="field-SERVER_PASS">Join password</label>
       <input id="field-SERVER_PASS" name="SERVER_PASS" type="text" required
              minlength="{{ min_server_pass_length }}" spellcheck="false">
       <p class="muted small">
-        Shown masked: leave <code>{{ mask }}</code> exactly as it is to keep the current
-        password. Replace it to change it &mdash; at least {{ min_server_pass_length }}
-        characters, and it cannot appear inside the server name.
+        Leave <code>{{ mask }}</code> as it is to keep your current password, or type
+        a new one over it &mdash; at least {{ min_server_pass_length }} characters, and
+        it cannot be part of the server name.
       </p>
 
       <label for="field-SERVER_PORT">Game port (UDP)</label>
       <input id="field-SERVER_PORT" name="SERVER_PORT" type="number" min="1" max="65533">
-      <p class="muted small">The query port (+1) and crossplay port (+2) follow it.</p>
+      <p class="muted small">Leave this alone unless something else is already using it.
+        Valheim quietly uses the next two numbers up as well.</p>
 
       <label class="check">
         <input id="field-SERVER_PUBLIC" name="SERVER_PUBLIC" type="checkbox">
@@ -149,30 +148,26 @@
       <fieldset class="modifiers" id="modifier-fields">
         <legend>World modifiers</legend>
         <p class="muted small">
-          Valheim's own difficulty rules, written as launch arguments to
-          <code>SERVER_ARGS</code>. They change the rules the server plays by &mdash;
-          they never alter or migrate your existing world &mdash; and they take effect
-          when the next <strong>Start</strong> creates the container, exactly like
-          every other value here. Leave a row on its default to leave that argument
-          out altogether, which is how Valheim's default is kept.
+          Valheim's own difficulty settings. They change how the game plays, never your
+          existing world. Leave anything on <em>normal</em> to keep Valheim's default.
         </p>
 
         <label for="field-modifier-preset">{{ modifier_labels["preset"] }}</label>
         <select id="field-modifier-preset" data-modifier-field="preset">
-          <option value="">normal &mdash; the default (no argument written)</option>
+          <option value="">normal &mdash; Valheim's default</option>
           {% for value in modifier_presets if value != "normal" %}
           <option value="{{ value }}">{{ value }}</option>
           {% endfor %}
         </select>
         <p class="muted small">
-          A preset sets every category at once, so it is written first: Valheim applies
-          these arguments in order and a preset after a category would flatten it back.
+          A preset sets everything below in one go. Pick one first, then change any
+          single row underneath if you want to.
         </p>
 
         {% for category, values in modifier_categories.items() %}
         <label for="field-modifier-{{ category }}">{{ modifier_labels[category] }}</label>
         <select id="field-modifier-{{ category }}" data-modifier-field="{{ category }}">
-          <option value="">normal &mdash; the default (no argument written)</option>
+          <option value="">normal &mdash; Valheim's default</option>
           {% for value in values if value != "normal" %}
           <option value="{{ value }}">{{ value }}</option>
           {% endfor %}
@@ -183,12 +178,12 @@
         <label class="check">
           <input id="field-modifier-{{ toggle }}" type="checkbox"
                  data-modifier-toggle="{{ toggle }}">
-          {{ modifier_labels[toggle] }} (<code>-setkey {{ toggle }}</code>)
+          {{ modifier_labels[toggle] }}
         </label>
         {% endfor %}
 
         <p class="muted small" id="modifier-preview-label">
-          Written to <code>SERVER_ARGS</code> exactly as shown:
+          What gets handed to Valheim:
         </p>
         <output id="modifier-preview" class="snippet"
                 aria-labelledby="modifier-preview-label" aria-live="polite"></output>
@@ -196,9 +191,8 @@
       </fieldset>
 
       <p class="muted small">
-        Only these keys are written. Every comment, blank line and any other key in the
-        file &mdash; <code>TZ</code>, <code>BACKUPS</code>, whatever you added by hand
-        &mdash; is left exactly as it is.
+        Only the settings on this page are changed. Anything else you have added to the
+        settings file yourself is left alone.
       </p>
 
       <div class="controls">
@@ -224,20 +218,17 @@
     <p id="worlds-error" class="banner banner-error" role="alert" hidden></p>
 
     <p class="muted">
-      The worlds on the <code>{{ config_volume }}</code> volume, under
-      <code>{{ worlds_dir }}</code>. <strong>Load</strong> points
-      <code>WORLD_NAME</code> at one and removes the stopped container, so the next
-      <strong>Start</strong> loads that world &mdash; the same path the settings panel
-      takes, and it works only while the server is off. Uploading is how a world you
-      generated locally reaches the server, which is also the only way to choose a
-      <em>seed</em>: the dedicated server takes no seed argument.
+      The worlds saved on your server. <strong>Load</strong> picks the one the server
+      opens next time you start it &mdash; the server has to be off first. Uploading
+      is how you move a world from your own PC onto the server, and it is the only way
+      to play a world with a <em>seed</em> you chose yourself.
     </p>
 
     <table class="settings" id="worlds-table">
       <thead>
         <tr>
           <th scope="col">World</th>
-          <th scope="col">Layout</th>
+          <th scope="col">Format</th>
           <th scope="col">Size</th>
           <th scope="col"><span class="visually-hidden">Action</span></th>
         </tr>
@@ -245,8 +236,8 @@
       <tbody id="worlds-body"></tbody>
     </table>
     <p id="worlds-empty" class="muted small" hidden>
-      No worlds on the volume yet. The first <strong>Start</strong> generates one from
-      <code>WORLD_NAME</code> with a random seed &mdash; or upload one below first.
+      No worlds yet. Press <strong>Start</strong> and Valheim makes one for you, or
+      upload one from your PC first.
     </p>
 
     <form id="world-upload-form" class="settings-form" autocomplete="off"
@@ -258,15 +249,15 @@
            aria-labelledby="world-dropzone-label">
         <p id="world-dropzone-label"><strong>Drop a world here to upload it</strong></p>
         <p class="muted small">
-          A 1.0 world is its folder (<code>_main.N.db2</code>,
-          <code>_main.N.fwl2</code>, <code>_main.N.chunks</code>, the
-          <code>.chunk</code> files) or a <code>.zip</code> of that folder. A pre-1.0
-          world is a matching <code>.db</code> and <code>.fwl</code> pair &mdash; drop
-          both. Up to {{ max_upload_human }} and {{ max_upload_files }} files per upload
-          &mdash; a 1.0 world is one file per visited map chunk, so for a well-explored
-          one drop the <code>.zip</code>, which is a single file whatever the world's
-          size. Nothing is written unless the whole upload checks out, and an existing
-          world is never overwritten.
+          Drop the world's whole folder, or a <code>.zip</code> of it. Worlds from
+          before Valheim 1.0 are a <code>.db</code> and a <code>.fwl</code> file
+          &mdash; drop both together.
+        </p>
+        <p class="muted small">
+          Up to {{ max_upload_human }} and {{ max_upload_files }} files at a time. A
+          big explored world is a lot of small files, so zip it first if the count
+          looks close. Nothing is saved unless the whole world arrives in one piece,
+          and a world you already have is never written over.
         </p>
         <div class="controls">
           <button type="button" id="btn-pick-folder" class="ghost small">Choose a folder…</button>
@@ -286,8 +277,8 @@
       <input id="world-upload-name" name="name" type="text" spellcheck="false"
              placeholder="taken from the folder or file name">
       <p class="muted small">
-        Optional. A 1.0 world is named by its folder, a pre-1.0 one by its files; fill
-        this in to store it under a different name. One name, no slashes.
+        Optional &mdash; the folder or file name is used if you leave this empty. Fill
+        it in to save the world under a different name. One name, no slashes.
       </p>
 
       <p class="muted small" id="world-legacy-warning" hidden>{{ legacy_warning }}</p>

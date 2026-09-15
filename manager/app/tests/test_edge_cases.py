@@ -2472,16 +2472,16 @@ def test_the_default_settings_file_cannot_start_a_public_server():
     assert values["SERVER_PUBLIC"] in ("0", "false", "False")
 
 
-def test_settings_panel_says_how_a_saved_change_reaches_the_container(stack):
-    """The panel shows file values; a running container uses what it was created with.
-    Saying nothing would make the two look interchangeable -- which is also why the
-    panel's own save removes the container instead of offering an apply-and-restart."""
+def test_settings_panel_says_how_a_saved_change_takes_effect(stack):
+    """Saving alone changes nothing the running server can see, so the panel has to say
+    what makes a saved value real. It says it in the operator's terms -- turn it off,
+    save, press Start -- rather than explaining containers."""
     with TestClient(stack["app"]) as client:
         login(client)
-        body = client.get("/").text
-    assert "valheim.env" in body
-    assert "created with" in body
-    assert "builds a new one with the new" in body
+        words = " ".join(client.get("/").text.split())
+    assert "Turn the server off to change them" in words
+    assert "and the new settings take effect" in words
+    assert "Your world and your backups are never touched" in words
 
 
 # =====================================================================
@@ -2873,8 +2873,7 @@ def test_editing_a_value_writes_the_file_and_removes_the_stopped_container(stack
     assert rows["SERVER_PASS"] == MASK
     # ... and the world lives on volumes, which is why the message can say so. Both
     # of them, matching the panel, the README and remove_stopped_container itself.
-    assert "valheim-config" in payload["message"]
-    assert "valheim-data" in payload["message"]
+    assert "Your world and your backups were not touched" in payload["message"]
 
     text = env_file.read_text(encoding="utf-8")
     assert "SERVER_NAME=Asgard" in text
@@ -2981,7 +2980,7 @@ def test_editing_is_refused_while_the_server_runs(stack, env_file):
     assert response.status_code == 409, response.text
     payload = response.json()
     assert "running" in payload["error"].lower()
-    assert "Stop the server" in payload["error"]
+    assert "Turn the server off first" in payload["error"]
     assert payload["saved"] is False
     assert env_file.read_text(encoding="utf-8") == before
     assert container.removed is False
@@ -3205,9 +3204,8 @@ def test_the_panel_offers_editing_and_says_what_a_save_does(stack):
     # The two promises the spec makes in the UI itself. Collapsed whitespace, because
     # the template wraps these sentences across lines.
     words = " ".join(page.split())
-    assert "removes the stopped container" in words
-    assert "are not touched by any of this" in words
-    assert "valheim-config" in page and "valheim-data" in page
+    assert "and the new settings take effect" in words
+    assert "Your world and your backups are never touched" in words
     # And the claim this feature removes.
     assert "Not editable here yet" not in page
 
@@ -3240,7 +3238,7 @@ def test_a_save_during_an_in_flight_action_is_refused_and_says_to_wait(
     assert response.status_code == 409, response.text
     error = response.json()["error"]
     assert action_message in error
-    assert "Wait for it to finish" in error
+    assert "Give it a moment" in error
     # Telling the operator to stop a server that is mid-pull, or mid-stop already, is
     # the wrong advice.
     assert "Stop the server before" not in error
@@ -3782,8 +3780,10 @@ def test_the_panel_says_modifiers_are_rules_and_not_the_world(stack):
         login(client)
         words = " ".join(client.get("/").text.split())
 
-    assert "SERVER_ARGS" in words
-    assert "never alter or migrate your existing world" in words
+    # The preview is still there -- what changed is that the panel no longer explains
+    # the argument string to get the point across.
+    assert 'id="modifier-preview"' in words
+    assert "never your existing world" in words
 
 
 def test_the_first_run_wizard_offers_no_modifiers(fresh):
@@ -3979,8 +3979,8 @@ def test_an_empty_volume_says_so_and_the_panel_still_renders(worlds):
     assert payload["worlds"] == []
     assert payload["worlds_error"] is None
     # The panel's own wording: nothing there yet, and the first Start makes one.
-    assert "No worlds on the volume yet" in page
-    assert "generates one" in page
+    assert "No worlds yet" in page
+    assert "Valheim makes one for you" in page
 
 
 def test_a_worlds_directory_that_cannot_be_read_is_named_not_crashed(
@@ -4061,7 +4061,7 @@ def test_switching_is_refused_while_the_server_is_live(worlds, state):
         response = switch_world(client, "Seedy")
 
     assert response.status_code == 409
-    assert "Stop the server" in response.json()["error"]
+    assert "Turn the server off first" in response.json()["error"]
     assert worlds["env"].read_text(encoding="utf-8") == before
     assert container.removed is False
 
@@ -4294,7 +4294,7 @@ def test_an_archive_entry_that_escapes_the_destination_is_refused(worlds, hostil
     assert response.status_code == 400, response.text
     error = response.json()["error"]
     # Reported as a rejected upload, not a crash, and nothing written anywhere.
-    assert "Nothing was written" in error
+    assert "Nothing was saved" in error
     assert "outside the world directory" in error
     assert volume_snapshot(worlds["dir"]) == before
     assert sorted(path.name for path in outside.iterdir()) == before_outside
@@ -4399,7 +4399,7 @@ def test_uploading_is_refused_while_the_server_is_live(worlds, state):
         )
 
     assert response.status_code == 409
-    assert "Stop the server" in response.json()["error"]
+    assert "Turn the server off first" in response.json()["error"]
     assert volume_snapshot(worlds["dir"]) == before
 
 
@@ -4417,7 +4417,7 @@ def test_a_docker_that_cannot_be_reached_refuses_a_world_action(worlds):
 
     assert upload.status_code == 502
     assert switch.status_code == 502
-    assert "could not confirm the server is stopped" in upload.json()["error"]
+    assert "no way to check that your server is off" in upload.json()["error"]
     assert volume_snapshot(worlds["dir"]) == before
 
 
@@ -4441,7 +4441,7 @@ def test_an_upload_with_no_files_is_refused(worlds):
         )
 
     assert response.status_code == 400
-    assert "Nothing was uploaded" in response.json()["error"]
+    assert "Nothing arrived" in response.json()["error"]
 
 
 def test_an_archive_holding_two_worlds_is_refused(worlds):
@@ -4607,9 +4607,12 @@ def test_the_panel_explains_switching_uploading_and_the_seed(worlds):
         page = client.get("/").text
 
     assert "Worlds" in page
-    assert "/config/worlds_local" in page
+    words = " ".join(page.split())
+    # What Load does, in the operator's terms.
+    assert "picks the one the server" in words and "next time you start it" in words
     # What can be uploaded, spelled out in the panel itself.
-    assert "_main.N.db2" in page and "_main.N.fwl2" in page
+    assert "the world's whole folder" in words
+    assert ".zip" in page
     assert ".db" in page and ".fwl" in page
     # The legacy conversion warning, and the seed, which is why uploading exists.
     assert "permanently" in page
@@ -4819,7 +4822,7 @@ def test_an_upload_past_the_file_limit_is_refused_pointing_at_the_zip(env_file, 
     assert response.status_code == 400, response.text
     error = response.json()["error"]
     assert "zip" in error
-    assert "Nothing was written" in error
+    assert "Nothing was saved" in error
     # The standard refusal shape, not FastAPI's `detail`: Starlette turns the parser's
     # own exception into an HTTPException whenever an app is in the scope.
     assert "detail" not in response.json()
@@ -4843,7 +4846,7 @@ def test_an_upload_that_does_not_declare_its_size_is_refused(worlds):
         )
 
     assert response.status_code == 411, response.text
-    assert "Content-Length" in response.json()["error"]
+    assert "did not say how big" in response.json()["error"]
     assert list(worlds["dir"].iterdir()) == []
 
 
@@ -5152,7 +5155,7 @@ def test_all_three_panels_are_rendered_on_every_load(stack):
     # The settings panel, with the help text and the editor the panel tests assert.
     for needle in ('id="settings-table"', 'id="settings-form"', 'id="btn-settings-edit"'):
         assert needle in panels["panel-settings"], needle
-    assert "builds a new one with the new" in " ".join(panels["panel-settings"].split())
+    assert "new settings take effect" in " ".join(panels["panel-settings"].split())
 
     # The worlds panel, with its table and its upload form.
     for needle in ('id="worlds-table"', 'id="world-upload-form"', 'id="world-dropzone"'):
@@ -5189,6 +5192,122 @@ def test_every_panel_is_pinned_hidden_by_its_own_rule(stack):
             continue
         touches_panel = "tabpanel" in selector or any(pid in selector for pid in PANEL_IDS)
         assert not touches_panel, f"{selector} sets display on a panel after its guard"
+
+
+# =====================================================================
+# The words the panels use.
+#
+# Every explanation on this page is read by someone who wants to play Valheim with
+# their friends, not by someone administering Docker. The vocabulary below kept
+# creeping back in because each sentence was individually true -- a save really does
+# remove a container -- so the rule is pinned here rather than left to taste.
+# =====================================================================
+
+# Docker's vocabulary, and the manager's own file layout. True, and none of it is the
+# operator's problem: they turn the server off, change a setting, and press Start.
+JARGON = [
+    "container",
+    "environment",
+    "volume",
+    "SERVER_ARGS",
+    "WORLD_NAME",
+    "/config",
+    "valheim.env",
+    "Content-Length",
+]
+
+# The Status card's readout is exempt: `Name`, `Game server`, `State` and `Started`
+# are labelled facts an operator needs when something is wrong (the name is what a
+# `docker rm` takes), not an explanation of how any of it works.
+PROSE_RE = re.compile(r'<p[^>]*class="[^"]*muted[^"]*"[^>]*>(.*?)</p>', re.S)
+
+
+def _panel_prose(page: str, panel_id: str) -> str:
+    start = page.index(f'id="{panel_id}"')
+    rest = page[start:]
+    end = rest.find('<div id="panel-', 1)
+    panel = rest if end == -1 else rest[:end]
+    sentences = [re.sub(r"<[^>]+>", " ", block) for block in PROSE_RE.findall(panel)]
+    return " ".join(" ".join(sentences).split())
+
+
+def test_every_setting_is_named_the_same_way_wherever_it_appears(stack, env_file):
+    """The editor called it "Join password" and the table beside it called the same row
+    SERVER_PASS. One setting, two names, depending on whether you were reading it or
+    changing it."""
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8") + "\nMY_OWN_KEY=42\n", encoding="utf-8"
+    )
+    with TestClient(stack["app"]) as client:
+        login(client)
+        status = client.get("/api/status").json()
+        page = client.get("/").text
+
+    labels = {row["key"]: row["label"] for row in status["settings"]}
+    assert labels["SERVER_NAME"] == "Server name"
+    assert labels["SERVER_PASS"] == "Join password"
+    assert labels["SERVER_PORT"] == "Game port"
+    # A key the manager has no name for keeps its own: it is the only name it has, and
+    # inventing one for something the operator added by hand would be worse.
+    assert labels["MY_OWN_KEY"] == "MY_OWN_KEY"
+
+    # The editor's own labels, which the table now matches rather than contradicts.
+    words = " ".join(page.split())
+    for label in ("Server name", "World name", "Join password"):
+        assert label in words, label
+
+
+def test_the_panels_explain_themselves_without_docker_vocabulary(stack):
+    """What the operator reads, in words about their game server."""
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    for panel_id in ("panel-settings", "panel-worlds"):
+        prose = _panel_prose(page, panel_id)
+        assert prose, f"no explanatory text found in {panel_id}"
+        for word in JARGON:
+            assert word.lower() not in prose.lower(), f"{panel_id} says {word!r}: {prose}"
+
+
+def test_the_panels_still_say_the_thing_the_jargon_was_carrying(stack):
+    """Plainer, not vaguer. Each sentence the rewrite replaced was load-bearing, and
+    dropping the fact along with the vocabulary is the way this goes wrong."""
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    settings = _panel_prose(page, "panel-settings")
+    # A saved value does nothing until the server is restarted by hand.
+    assert "Turn the server off to change them" in settings
+    assert "new settings take effect" in settings
+    # ...and saving is not going to cost anyone their world.
+    assert "never touched" in settings
+    # A world name nobody has used before means a NEW world, which is the one way to
+    # lose track of a save game from this panel.
+    assert "brand-new" in settings and "old world is kept" in settings
+
+    worlds = _panel_prose(page, "panel-worlds")
+    # Load needs the server off, and takes effect on the next start.
+    assert "next time you start it" in worlds
+    assert "server has to be off" in worlds
+    # Uploading is the only way to choose a seed.
+    assert "seed" in worlds
+    # An upload never silently replaces a world that is already there.
+    assert "never written over" in worlds
+
+
+def test_a_refusal_tells_the_operator_what_to_do_about_it(stack):
+    """A refusal that only states a fact leaves the operator stuck."""
+    stack["docker"].seed_running()
+    with TestClient(stack["app"]) as client:
+        login(client)
+        refused = save_settings(client, {"SERVER_NAME": "Asgard"})
+
+    assert refused.status_code == 409, refused.text
+    error = refused.json()["error"]
+    assert "Turn the server off first" in error
+    assert "container" not in error.lower()
 
 
 def test_tab_switching_never_calls_the_manager(stack):

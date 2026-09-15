@@ -49,6 +49,26 @@ PRIMARY_KEYS = (
     "SERVER_ARGS",
 )
 
+# What each key is called in the panel. The editor has always used plain names on its
+# own labels; the read-only table showed the raw key beside them, so the same setting
+# had two names depending on whether you were looking at it or changing it. A key with
+# no entry here -- anything the operator added to the file themselves -- keeps its own
+# name, which is the only name it has.
+SETTINGS_LABELS = {
+    "SERVER_NAME": "Server name",
+    "WORLD_NAME": "World name",
+    "SERVER_PORT": "Game port",
+    "SERVER_PASS": "Join password",
+    "SERVER_PUBLIC": "In the public server list",
+    "CROSSPLAY": "Crossplay (Xbox / Game Pass)",
+    "SERVER_ARGS": "World modifiers",
+    "TZ": "Time zone",
+    "BACKUPS": "Automatic backups",
+    "BACKUPS_INTERVAL": "Backup every (seconds)",
+    "BACKUPS_MAX_AGE": "Keep backups for (days)",
+    "UPDATE_ON_START": "Update the game on start",
+}
+
 _LINE_RE = re.compile(
     r"""^\s*(?:export\s+)?          # optional `export ` prefix
         (?P<key>[A-Za-z_][A-Za-z0-9_]*)
@@ -348,6 +368,7 @@ class SettingsStore:
             rows.append(
                 {
                     "key": key,
+                    "label": SETTINGS_LABELS.get(key, key),
                     "value": MASK if (secret and raw) else raw,
                     "secret": secret,
                 }
