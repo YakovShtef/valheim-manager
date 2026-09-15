@@ -3,7 +3,8 @@
 # an entrypoint is the classic "works here, exits immediately there" bug.
 * text=auto eol=lf
 
-# Nothing here is binary, but be explicit about the ones that must never be touched.
+# The dashboard's icons are binary, and `text=auto` above would rewrite bytes that
+# happen to look like line endings. These must never be touched.
 *.png binary
 *.jpg binary
 *.ico binary

@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="same-origin">
   <title>{% block title %}Valheim Server Manager{% endblock %}</title>
+  {# In the <head> of the base template, so the login and first-run pages carry it
+     too -- /static/ is reachable unauthenticated (see main.py), which is what lets
+     the icon show on the sign-in tab rather than only once you are in. #}
+  <link rel="icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="icon" href="/static/icon.png" type="image/png" sizes="256x256">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  {# Tints the browser chrome on Android to match the page rather than leaving a
+     white bar above a dark dashboard. #}
+  <meta name="theme-color" content="#0b0e12">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>

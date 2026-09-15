@@ -354,3 +354,37 @@ volumes:
     name: valheim-data
   valheim-manager-state:
     name: valheim-manager-state
+
+# ---------------------------------------------------------------- CasaOS metadata
+# CasaOS reads this extension field when it imports a compose file, and it is what
+# gives the app a name, an icon and a working "open" button in the CasaOS dashboard
+# instead of a generic placeholder. Docker Compose itself ignores `x-` keys, so this
+# block changes nothing about how the stack runs.
+#
+# `icon` has to be a URL CasaOS can fetch, which is why it points at the copy in the
+# repo rather than at /static on the manager itself: the dashboard has to be able to
+# draw the tile while the manager is stopped.
+x-casaos:
+  architectures:
+    # The upstream Valheim dedicated server is x86-64 only, so the stack as a whole
+    # is, even though the manager image itself would build anywhere.
+    - amd64
+  main: manager
+  author: YakovShtef
+  developer: YakovShtef
+  category: Games
+  icon: https://raw.githubusercontent.com/YakovShtef/valheim-manager/main/manager/app/static/icon.png
+  scheme: http
+  # Interpolated like the rest of the file, so it follows MANAGER_PORT in `.env`
+  # rather than drifting from the port the manager is actually published on.
+  port_map: "${MANAGER_PORT:-8080}"
+  title:
+    en_us: Valheim Server Manager
+  tagline:
+    en_us: Run a Valheim dedicated server from your browser.
+  description:
+    en_us: >-
+      Start, stop and restart a Valheim dedicated server and watch its log live.
+      Edit the server settings and Valheim's world modifiers, switch between worlds,
+      upload and back them up, and manage per-world mods -- all behind a login, with
+      no file editing and no shell.
