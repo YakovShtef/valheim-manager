@@ -289,8 +289,7 @@ class WorldStore:
             entries = list(os.scandir(self.root))
         except OSError as exc:
             raise WorldError(
-                f"Could not read the worlds folder: {exc}. Check that the manager "
-                "is allowed to read it (MANAGER_GID)."
+                f"Could not read the worlds folder ({exc}). Run `docker compose up -d` on the server -- that re-runs the one-off step that grants the manager access to the worlds folder -- then try again."
             ) from exc
 
         found: list[World] = []
@@ -431,7 +430,7 @@ class WorldStore:
                 raise
             except OSError as exc:
                 raise WorldError(
-                    f"Could not delete {entry!r}: {exc}. "
+                    f"Could not delete {entry!r} ({exc}). Run `docker compose up -d` on the server -- that re-runs the one-off step that grants the manager access to the worlds folder -- then try again. "
                     + ("Nothing was deleted." if not removed else
                        f"Already removed: {', '.join(removed)}.")
                 ) from exc
@@ -457,9 +456,8 @@ class WorldStore:
             self.root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise WorldError(
-                "There is no worlds folder yet and the manager is not allowed to "
-                f"make one ({exc}). Press Start once to let Valheim create it, then "
-                "upload. Nothing was saved."
+                f"There is no worlds folder yet and the manager could not make "
+                f"one ({exc}). Run `docker compose up -d` on the server -- that re-runs the one-off step that grants the manager access to the worlds folder -- then try again. Nothing was saved."
             ) from exc
         _set_mode(self.root, WORLD_DIR_MODE, fallback=WORLD_DIR_MODE_FALLBACK)
 
@@ -477,8 +475,7 @@ class WorldStore:
             staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=self.root))
         except OSError as exc:
             raise WorldError(
-                f"Could not write to the worlds folder: {exc}. Valheim owns that "
-                "folder, so the manager needs to share its group (MANAGER_GID). "
+                f"Could not write to the worlds folder ({exc}). Run `docker compose up -d` on the server -- that re-runs the one-off step that grants the manager access to the worlds folder -- then try again. "
                 "Nothing was saved."
             ) from exc
 

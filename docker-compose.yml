@@ -55,6 +55,79 @@ services:
         max-size: ${VALHEIM_LOG_MAX_SIZE:-20m}
         max-file: "${VALHEIM_LOG_MAX_FILES:-5}"
 
+  # ------------------------------------------------------------- permissions
+  # Runs once on `docker compose up`, then exits. It exists because of a permission
+  # problem neither of the long-running services can solve for itself:
+  #
+  #   The game server creates /config/worlds_local, and everything in it, as
+  #   PUID:PGID with a default umask of 022 -- so mode 755 directories and 644
+  #   files. The manager runs as its own uid in the game's GROUP, and `chmod`
+  #   requires being the owner or holding CAP_FOWNER. The manager is neither: it is
+  #   uid 10001 and runs with cap_drop: [ALL]. So it cannot grant itself access,
+  #   and every upload and every delete failed with EACCES until somebody ran
+  #   chmod on the host by hand.
+  #
+  # Root for a few milliseconds in a container with no network at all is a far
+  # smaller thing to accept than either giving the network-facing manager
+  # CAP_FOWNER or starting it as root and dropping privileges. PERMISSIONS_UMASK
+  # in settings/valheim.env stops new files needing this at all; this is what
+  # repairs the ones already on the volume.
+  permissions:
+    image: ${PERMISSIONS_IMAGE:-alpine:3.20}
+    container_name: valheim-permissions
+    user: "0:0"
+    restart: "no"
+    # Nothing to reach, so nothing to reach it. This is the only root container in
+    # the stack and it should not be able to talk to anything.
+    network_mode: "none"
+    volumes:
+      - valheim-config:/config
+      # The settings directory too. Docker creates a missing bind-mount source as
+      # root and the manager runs as uid 10001, which is why installing on native
+      # Linux used to begin with `sudo chown -R 10001:10001 settings`.
+      - ${VALHEIM_SETTINGS_DIR:-./settings}:/srv/settings
+    # `$$` is a literal `$` for the shell: Compose interpolates `$` in this file, so
+    # an unescaped $dir would be substituted away to nothing before sh ever sees it.
+    #
+    # Every step is best-effort and the script always exits 0, on purpose. The
+    # manager waits for this to COMPLETE, so a non-zero exit here would stop the
+    # dashboard from starting at all -- turning "uploads are refused" into "nothing
+    # runs". It says plainly what it did instead: `docker compose logs permissions`.
+    command:
+      - sh
+      - -cu
+      - |
+        dir=/config/worlds_local
+        gid='${MANAGER_GID:-1000}'
+        uid='${MANAGER_UID:-10001}'
+        # The directory the manager writes valheim.env into. Docker made it
+        # root-owned; hand it to the uid the manager actually runs as.
+        mkdir -p /srv/settings 2>/dev/null || true
+        chown -R "$$uid:$$gid" /srv/settings 2>/dev/null || true
+        chmod 775 /srv/settings 2>/dev/null || true
+        mkdir -p "$$dir" 2>/dev/null || true
+        chgrp -R "$$gid" "$$dir" 2>/dev/null || true
+        # setgid, so worlds the game creates from here on land in the shared group
+        # without anything having to run again.
+        chmod 2775 "$$dir" 2>/dev/null || true
+        find "$$dir" -mindepth 1 -type d -exec chmod 2775 {} + 2>/dev/null || true
+        find "$$dir" -mindepth 1 -type f -exec chmod 664 {} + 2>/dev/null || true
+        owner=$$(stat -c %u /srv/settings 2>/dev/null || echo "?")
+        if [ "$$owner" = "$$uid" ]; then
+          echo "settings folder ready: owned by $$uid"
+        else
+          echo "WARNING: the settings folder is owned by $$owner, wanted $$uid."
+          echo "WARNING: the manager may not be able to save your settings."
+        fi
+        mode=$$(stat -c %a "$$dir" 2>/dev/null || echo "?")
+        if [ "$$mode" = "2775" ]; then
+          echo "worlds folder ready: $$dir is $$mode, group $$gid"
+        else
+          echo "WARNING: $$dir is $$mode, wanted 2775 (group $$gid)."
+          echo "WARNING: uploading and deleting worlds will be refused."
+        fi
+        exit 0
+
   # --------------------------------------------------------- scoped socket proxy
   # The ONLY service that touches /var/run/docker.sock. Everything not needed by
   # the manager is explicitly revoked, including the API sections that would allow
@@ -113,7 +186,12 @@ services:
     container_name: valheim-manager
     restart: unless-stopped
     depends_on:
-      - docker-socket-proxy
+      docker-socket-proxy:
+        condition: service_started
+      # Not just ordering: the manager must not accept an upload into a directory
+      # it cannot write, so it waits for the fixer to finish successfully.
+      permissions:
+        condition: service_completed_successfully
     # The uid/gid the manager runs as. The uid owns /srv/state (the credential volume)
     # and has to be able to write the mounted settings directory.
     #

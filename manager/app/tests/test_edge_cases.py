@@ -5517,6 +5517,150 @@ def test_the_store_never_deletes_outside_its_own_directory(worlds_dir, tmp_path)
 
 
 # =====================================================================
+# Preparing the worlds folder.
+#
+# The game server creates /config/worlds_local as PUID:PGID with umask 022, so
+# mode 755. The manager runs as its own uid in the game's group and cannot chmod
+# what it does not own -- it is not the owner and cap_drop: [ALL] takes CAP_FOWNER.
+# So every upload and every delete failed with EACCES until somebody ran chmod on
+# the host by hand, which is the one thing this project is supposed to spare them.
+# =====================================================================
+
+
+def _compose_block(project_root, service: str) -> str:
+    compose = (project_root / "docker-compose.yml").read_text(encoding="utf-8")
+    block = compose.split(f"  {service}:", 1)[1]
+    following = re.search(r"\n  [a-z][a-z0-9_-]*:\n", block)
+    return block[: following.start()] if following else block
+
+
+def test_the_permissions_service_prepares_the_worlds_folder(project_root):
+    block = _compose_block(project_root, "permissions")
+
+    # Root, because chmod on someone else's files needs it -- and in a container of
+    # its own precisely so the long-running, network-facing manager never is.
+    assert 'user: "0:0"' in block
+    assert 'network_mode: "none"' in block, "the one root container should reach nothing"
+    assert "valheim-config:/config" in block
+    assert 'restart: "no"' in block, "a one-shot that restarts is a boot loop"
+
+    # What it actually does: the directory group-writable and setgid, and the world
+    # files inside it group-writable too -- deleting a world needs write on the
+    # world's own directory, not just on the folder holding it.
+    assert "/config/worlds_local" in block
+    assert "chmod 2775" in block
+    assert "chmod 664" in block
+    assert "chgrp" in block
+
+    # It must not be able to take the dashboard down with it. The manager waits for
+    # this to COMPLETE, so a non-zero exit would stop the manager starting at all --
+    # turning "uploads are refused" into "nothing runs".
+    assert "exit 0" in block
+    assert "WARNING" in block, "a failure has to say so somewhere"
+
+
+def test_the_fixer_escapes_its_shell_variables(project_root):
+    """Compose interpolates `$` in this file. An unescaped $dir is substituted away
+    to an empty string before sh ever sees it, and the script then silently operates
+    on nothing -- the exact failure mode this project already hit once with bcrypt
+    hashes in an env file."""
+    block = _compose_block(project_root, "permissions")
+    script = block.split("command:", 1)[1]
+
+    assert "$$dir" in script and "$$gid" in script
+    # Every `$` in the script is either an escaped `$$` or a `${...}` Compose is
+    # meant to substitute. A bare `$name` is the bug.
+    bare = re.findall(r"(?<!\$)\$(?!\$|\{)[A-Za-z_(]", script.replace("$$", ""))
+    assert bare == [], f"unescaped shell variables in the fixer: {bare}"
+
+
+def test_the_manager_waits_for_the_worlds_folder_to_be_prepared(project_root):
+    """Ordering is not enough on its own: an upload accepted before the fix ran would
+    fail for a reason that had already been solved."""
+    block = _compose_block(project_root, "manager")
+    assert "permissions:" in block
+    assert "condition: service_completed_successfully" in block
+
+
+def test_the_game_is_asked_to_create_group_writable_files(project_root):
+    """The fixer repairs what is already on the volume; this is what stops the problem
+    coming back every time the game server creates a world."""
+    assert parse_env_text(DEFAULT_SETTINGS_TEXT)["PERMISSIONS_UMASK"] == "002"
+    example = (project_root / "valheim.env.example").read_text(encoding="utf-8")
+    assert parse_env_text(example)["PERMISSIONS_UMASK"] == "002"
+
+
+def test_the_umask_is_not_something_the_panel_can_quietly_change(project_root):
+    """It is not one of the panel's keys, so a save leaves it exactly as written --
+    which is what keeps a settings edit from re-breaking uploads."""
+    from app.setup import SETTINGS_KEYS
+
+    assert "PERMISSIONS_UMASK" not in SETTINGS_KEYS
+
+
+def test_the_game_container_gets_a_group_writable_umask(stack, env_file):
+    """An install made before PERMISSIONS_UMASK existed has no such key, and the
+    manager never adds keys to a file the operator owns -- so the default is applied
+    at create time instead. Without it the game keeps making worlds the manager
+    cannot delete, and the one-shot fixer would have work to do after every Start."""
+    assert "PERMISSIONS_UMASK" not in env_file.read_text(encoding="utf-8")
+
+    stack["control"].start()
+
+    created = stack["docker"].containers.create_calls[0]
+    assert created["environment"]["PERMISSIONS_UMASK"] == "002"
+
+
+def test_a_umask_the_operator_set_themselves_is_left_alone(stack, env_file):
+    """It is a default, not an override. Someone who deliberately wants 022 gets it."""
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8") + "\nPERMISSIONS_UMASK=027\n", encoding="utf-8"
+    )
+
+    stack["control"].start()
+
+    created = stack["docker"].containers.create_calls[0]
+    assert created["environment"]["PERMISSIONS_UMASK"] == "027"
+
+
+def test_creating_a_container_does_not_modify_the_settings_it_was_given(env_file, fake_docker):
+    """The umask default belongs to the container, not to the caller's dictionary.
+    `container_env` builds a fresh dict today and so nothing would notice -- but it is
+    a provider callable, and a memoised one would start handing out a key the operator
+    never set, which would then show up as a settings row and as a diff on save."""
+    config = build_config(env_file)
+    shared = SettingsStore(env_file).container_env()
+    control = DockerControl(
+        base_url=config.docker_host,
+        container_name=config.container_name,
+        image=config.image,
+        network=config.network,
+        config_volume=config.config_volume,
+        data_volume=config.data_volume,
+        env_provider=lambda: shared,
+        port_provider=lambda: [2456, 2457, 2458],
+        ready_pattern=config.ready_pattern,
+        stop_timeout=config.stop_timeout,
+        restart_policy=config.restart_policy,
+        client_factory=lambda: fake_docker,
+    )
+
+    control.start()
+
+    assert "PERMISSIONS_UMASK" not in shared, "the provider's own dict was modified"
+    created = fake_docker.containers.create_calls[0]
+    assert created["environment"]["PERMISSIONS_UMASK"] == "002"
+
+
+def test_the_umask_default_does_not_leak_into_the_settings_the_panel_shows(stack, env_file):
+    """The container gets the default; the operator's file does not silently grow a
+    key they never wrote."""
+    stack["control"].start()
+
+    assert "PERMISSIONS_UMASK" not in env_file.read_text(encoding="utf-8")
+
+
+# =====================================================================
 # The words the panels use.
 #
 # Every explanation on this page is read by someone who wants to play Valheim with

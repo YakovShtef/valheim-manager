@@ -44,17 +44,6 @@ cd valheim-manager
 docker compose up -d
 ```
 
-> 🐧 **On a Linux machine** (not Docker Desktop), run this one extra line *before*
-> `docker compose up -d`, or the dashboard won't be able to save your settings:
->
-> ```bash
-> mkdir -p settings && sudo chown -R 10001:10001 settings
-> ```
->
-> There's an explanation in [Why that `chown` on Linux](#why-that-chown-on-linux) if
-> you're curious. If you forget it, nothing breaks — the setup page just tells you,
-> and waits.
-
 ### Step 2 — Open the setup link
 
 The dashboard prints a one-time link to its log. Fetch it with:
@@ -304,9 +293,15 @@ The link is single-use and a restart replaces it. Run `docker compose logs manag
 again and use the newest one. Make sure you copied the whole URL including the
 `?token=…` part.
 
-**The setup page says it can't save your settings**
-That's the Linux permissions thing. Run `sudo chown -R 10001:10001 settings` and try
-again — the same link still works. See [why](#why-that-chown-on-linux).
+**The setup page says it can't save your settings, or an upload is refused**
+Permissions on the folders the dashboard writes to. Re-run `docker compose up -d`,
+which runs the helper that fixes them, then check what it said:
+
+```bash
+docker compose logs permissions
+```
+
+See [How file permissions are handled](#how-file-permissions-are-handled).
 
 **Port 8080 is already in use**
 Put `MANAGER_PORT=8099` (or any free number) in a `.env` file next to
@@ -384,16 +379,44 @@ a temp file and an atomic rename, so the game server never reads a half-written 
 Drop your own file in before the first `docker compose up -d` and it's left exactly
 as you wrote it — `valheim.env.example` is a ready-made starting point.
 
-### Why that `chown` on Linux
+### How file permissions are handled
 
-Docker creates a missing bind-mount folder owned by `root`. The dashboard runs as an
-unprivileged user (uid `10001`) with **every Linux capability dropped** — it isn't
-root and it can't `chown` anything — so it simply can't write into a root-owned
-`settings/` folder.
+Two services write to the same files, as two different users, and neither can hand
+itself access. This used to be two `sudo chown` / `chmod` commands in the install
+instructions; now it happens on its own.
 
-Hence `sudo chown -R 10001:10001 settings`, which hands that one folder to the user
-the dashboard actually runs as. Docker Desktop on Windows and macOS handles this for
-you, which is why it's Linux-only advice.
+The problem: Valheim creates `/config/worlds_local` and every world in it as
+`PUID:PGID` with a default umask of `022` — mode `755` folders, `644` files. The
+dashboard runs as its own uid (`10001`) in Valheim's *group*, and `chmod` requires
+being the file's owner or holding `CAP_FOWNER`. The dashboard is neither: it isn't
+the owner, and it runs with `cap_drop: [ALL]` on purpose. So it could list your
+worlds but not upload beside them, switch away from them, or delete them. Same story
+for `settings/`, which Docker creates owned by `root`.
+
+The fix is a one-shot `permissions` container that runs on every `docker compose up`
+and exits in about a second. It's root, so it can do what neither long-running
+service can, and it has `network_mode: none` — the only root container in the stack
+can't talk to anything. It:
+
+- hands `settings/` to the uid the dashboard runs as;
+- makes `worlds_local` group-writable and **setgid**, so worlds created later inherit
+  the shared group automatically;
+- makes the worlds already there group-writable, folders and files.
+
+And `PERMISSIONS_UMASK=002` in `settings/valheim.env` stops the problem recurring at
+source — Valheim then creates group-writable files itself, so on later runs the
+helper finds nothing to fix.
+
+It's deliberately best-effort and always exits `0`. The dashboard waits for it to
+finish, so a non-zero exit would stop the dashboard from starting at all — turning
+"uploads are refused" into "nothing runs". If it can't do its job it says so:
+
+```bash
+docker compose logs permissions
+```
+
+You'll see either `worlds folder ready: ... is 2775` or a `WARNING` line naming what
+it found instead.
 
 If you'd rather the dashboard ran as *you*, that works too, but the credential volume
 was initialised for uid 10001 and would become unreadable — so it has to go, and
@@ -424,15 +447,11 @@ user: "${MANAGER_UID:-10001}:${MANAGER_GID:-1000}"
 **Keep `MANAGER_GID` equal to `PGID`.** If you change `PGID` in
 `settings/valheim.env`, set `MANAGER_GID` to match in `.env`.
 
-The worlds folder belongs to the game server, which creates it on its first
-**Start**. On a brand-new volume the dashboard will create it if it's allowed to, and
-say so plainly if it isn't — in which case press Start once, then upload. If it ever
-reports it can't write into an existing worlds folder, fix it once from the host:
-
-```bash
-docker run --rm -v valheim-config:/config alpine \
-  sh -c 'chmod 2775 /config/worlds_local'
-```
+The worlds folder is created by the `permissions` helper above if it doesn't exist
+yet, and made group-writable if it does, so uploading works on a brand-new volume
+without pressing **Start** first. If the dashboard ever does report it can't write
+there, re-run `docker compose up -d` — that runs the helper again — and check
+`docker compose logs permissions`.
 
 ### Deploying on a Linux server (CasaOS, Debian, a NAS)
 
@@ -446,7 +465,6 @@ sudo apt install -y git
 git clone <your-repo-url> valheim-manager
 cd valheim-manager
 docker compose version                          # needs v2.30.0+
-mkdir -p settings && sudo chown -R 10001:10001 settings
 docker compose up -d
 docker compose logs manager                     # the one-time setup link
 ```

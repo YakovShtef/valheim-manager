@@ -65,6 +65,17 @@ _IN_FLIGHT_PHASES = (PHASE_PULLING, PHASE_CREATING, PHASE_STARTING, PHASE_STOPPI
 STOP_FIRST = "Turn the server off first, then try again."
 WAIT_FIRST = "Give it a moment, then try again."
 
+# The umask the game server creates worlds, backups and config with. The image's own
+# default is 022, which produces mode 755 directories the manager cannot write to --
+# it runs as a different uid in the game's group and cannot chmod what it does not
+# own. 002 makes them group-writable, which is what lets the Worlds panel upload
+# beside them, switch away from them and delete them.
+#
+# Applied here rather than written into settings/valheim.env, because that file
+# belongs to the operator and an install made before this existed will not have the
+# key. A value they set themselves always wins.
+DEFAULT_PERMISSIONS_UMASK = "002"
+
 
 class DockerControlError(RuntimeError):
     """A Docker operation failed; ``docker_message`` is the engine's own text."""
@@ -427,6 +438,11 @@ class DockerControl:
             environment = self.env_provider()
         except Exception as exc:
             raise DockerControlError("Could not read the Valheim settings env file.", str(exc)) from exc
+
+        # A copy: the provider's dict is not ours to modify, and a caller that cached
+        # it would otherwise see this default appear in the settings it reads back.
+        environment = dict(environment)
+        environment.setdefault("PERMISSIONS_UMASK", DEFAULT_PERMISSIONS_UMASK)
 
         ports = {f"{port}/udp": port for port in self.port_provider()}
         volumes = {
