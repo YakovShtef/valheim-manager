@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -591,6 +592,60 @@ def create_app(
             raw = ""
         return parse_modifiers(raw).as_dict()
 
+    def server_clock() -> dict[str, Any]:
+        """The wall clock of the machine the manager runs on.
+
+        The dashboard's clock is deliberately the *server's* time, not the browser's:
+        a log line, a backup stamp and a "started at" all come from this clock, so a
+        header showing the operator's own laptop time would disagree with everything
+        else on the page.
+
+        Sent as an anchor -- epoch plus the offset that was in force at that instant
+        -- rather than as a formatted string. The browser ticks locally between
+        pushes, which keeps the clock off the network, and re-anchors on every push,
+        which keeps it from drifting. The offset travels with it so the page can show
+        the server's wall clock without knowing anything about time zones.
+
+        The zone comes from the container's own TZ. Compose passes TZ through to the
+        manager service; unset, a container is UTC, which is why the label is always
+        drawn next to the time instead of being left implicit.
+        """
+        now = datetime.now().astimezone()
+        offset = now.utcoffset()
+        seconds = int(offset.total_seconds()) if offset else 0
+        # tzname() is a short abbreviation on glibc, which is what the container runs
+        # ("IDT"), but a full sentence on Windows, where the tests and a dev run
+        # happen ("Jerusalem Daylight Time"). The clock has room for the first and
+        # not the second, so anything that long becomes its offset instead -- which
+        # is never ambiguous, even if it is less friendly.
+        name = now.tzname() or ""
+        if not name or len(name) > 6:
+            magnitude = abs(seconds)
+            name = "UTC%s%d" % ("+" if seconds >= 0 else "-", magnitude // 3600)
+            if magnitude % 3600:
+                name += ":%02d" % (magnitude % 3600 // 60)
+        return {
+            "epoch": now.timestamp(),
+            "offset_minutes": seconds // 60,
+            "zone": name,
+        }
+
+    def status_envelope() -> dict[str, Any]:
+        """The full status payload, as both /api/status and the log socket send it.
+
+        One builder rather than two literals: the socket and the REST route have to
+        agree, and they did not disagree only because nothing had been added to the
+        shape since they were written.
+        """
+        rows, settings_error = display_settings()
+        return {
+            "status": safe_status(),
+            "settings": rows,
+            "settings_error": settings_error,
+            "modifiers": modifier_state(),
+            "server_clock": server_clock(),
+        }
+
     def safe_status() -> dict[str, Any]:
         try:
             return control.status()
@@ -645,6 +700,10 @@ def create_app(
                 "modifier_labels": MODIFIER_LABELS,
                 # The worlds panel states its own caps and says where the worlds live,
                 # all from the store that will actually enforce them.
+                # Rendered into the markup as well as pushed, because the browser
+                # gets status only from the log socket: without this the clock would
+                # sit blank from page load until the first push connects.
+                "server_clock": server_clock(),
                 "worlds_dir": str(world_store.root),
                 "mod_upload_max_human": human_size(mod_store.max_upload_bytes),
                 "max_upload_bytes": world_store.max_upload_bytes,
@@ -813,16 +872,7 @@ def create_app(
     @app.get("/api/status")
     async def api_status(request: Request) -> JSONResponse:
         require_session(request)
-        rows, settings_error = display_settings()
-        status = await run_in_threadpool(safe_status)
-        return JSONResponse(
-            {
-                "status": status,
-                "settings": rows,
-                "settings_error": settings_error,
-                "modifiers": modifier_state(),
-            }
-        )
+        return JSONResponse(await run_in_threadpool(status_envelope))
 
     @app.post("/api/start")
     async def api_start(request: Request) -> JSONResponse:
@@ -1701,17 +1751,8 @@ def create_app(
                 ):
                     await websocket.close(code=1008)
                     return
-                rows, settings_error = display_settings()
-                status = await run_in_threadpool(safe_status)
-                await websocket.send_json(
-                    {
-                        "type": "status",
-                        "status": status,
-                        "settings": rows,
-                        "settings_error": settings_error,
-                        "modifiers": modifier_state(),
-                    }
-                )
+                envelope = await run_in_threadpool(status_envelope)
+                await websocket.send_json({"type": "status", **envelope})
             try:
                 lines = await run_in_threadpool(
                     control.fetch_logs,

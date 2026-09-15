@@ -41,6 +41,21 @@
     <span id="status-badge" class="badge badge-unknown">connecting…</span>
     <span id="link-badge" class="badge badge-unknown" title="WebSocket connection">live</span>
   </p>
+  {# The server's clock, not the browser's -- see server_clock() in main.py. The
+     anchor is rendered into the data- attributes so the time is right on first
+     paint; app.js re-anchors from every status push and ticks in between.
+
+     Deliberately NOT a live region: it changes every second, and an aria-live
+     clock makes a screen reader read the time over whatever else is happening.
+     The label names it instead, so it is there when asked for and silent
+     otherwise. #}
+  <div class="clock" id="server-clock"
+       data-epoch="{{ server_clock.epoch }}"
+       data-offset="{{ server_clock.offset_minutes }}"
+       role="group" aria-label="Time on the server">
+    <time class="clock-time" id="clock-time">--:--:--</time>
+    <span class="clock-date" id="clock-date">{{ server_clock.zone }}</span>
+  </div>
 </div>
 
 {# tabindex on the panels, not just the strip: while the server runs the settings

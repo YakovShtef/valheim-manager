@@ -26,6 +26,9 @@
     tablist: document.querySelector("[role='tablist']"),
     badge: document.getElementById("status-badge"),
     link: document.getElementById("link-badge"),
+    clock: document.getElementById("server-clock"),
+    clockTime: document.getElementById("clock-time"),
+    clockDate: document.getElementById("clock-date"),
     message: document.getElementById("status-message"),
     state: document.getElementById("meta-state"),
     started: document.getElementById("meta-started"),
@@ -310,6 +313,86 @@
   // sitting beside a green "ready" badge for an operator who never presses a button.
   function clearErrorFrom(source) {
     if (bannerSource === source) { clearError(); }
+  }
+
+  // ------------------------------------------------------------------ clock
+  //
+  // The server's wall clock, not the browser's. The manager sends an anchor -- an
+  // instant plus the UTC offset in force at that instant -- and this ticks locally
+  // in between: anchoring rather than polling keeps the clock off the network, and
+  // re-anchoring on every status push keeps it from drifting away from the machine
+  // it is reporting on.
+
+  var DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  var clock = { epoch: null, offsetMinutes: 0, zone: "", takenAt: 0 };
+  // The last strings written, so a 250ms tick costs a comparison rather than two
+  // DOM writes a second that mostly change nothing.
+  var clockPainted = { time: "", date: "" };
+
+  function pad2(value) { return (value < 10 ? "0" : "") + value; }
+
+  function anchorClock(payload) {
+    if (!payload) { return; }
+    var epoch = Number(payload.epoch);
+    // A payload without a usable instant leaves the previous anchor alone: a clock
+    // that keeps ticking from a slightly stale anchor beats one that blanks out.
+    if (!isFinite(epoch)) { return; }
+    clock.epoch = epoch;
+    clock.offsetMinutes = Number(payload.offset_minutes) || 0;
+    if (payload.zone) { clock.zone = String(payload.zone); }
+    clock.takenAt = Date.now();
+    paintClock();
+  }
+
+  function paintClock() {
+    if (!el.clockTime || clock.epoch === null) { return; }
+    // Shift the instant by the server's offset, then read it back with the UTC
+    // getters. That yields the server's wall clock whatever zone the browser is in,
+    // without this file knowing anything about time zones.
+    var elapsed = (Date.now() - clock.takenAt) / 1000;
+    var at = new Date((clock.epoch + elapsed + clock.offsetMinutes * 60) * 1000);
+
+    var time = pad2(at.getUTCHours()) + ":" + pad2(at.getUTCMinutes()) + ":" + pad2(at.getUTCSeconds());
+    var date = DAY_NAMES[at.getUTCDay()] + " " + at.getUTCDate() + " " +
+               MONTH_NAMES[at.getUTCMonth()] + " " + at.getUTCFullYear();
+    if (clock.zone) { date += " · " + clock.zone; }
+
+    if (time !== clockPainted.time) {
+      clockPainted.time = time;
+      el.clockTime.textContent = time;
+      // A machine-readable copy of what is on screen, offset included, so the
+      // rendered time is never ambiguous about which zone it is in.
+      var sign = clock.offsetMinutes < 0 ? "-" : "+";
+      var abs = Math.abs(clock.offsetMinutes);
+      el.clockTime.setAttribute(
+        "datetime",
+        at.getUTCFullYear() + "-" + pad2(at.getUTCMonth() + 1) + "-" + pad2(at.getUTCDate()) +
+        "T" + time + sign + pad2(Math.floor(abs / 60)) + ":" + pad2(abs % 60)
+      );
+    }
+    if (date !== clockPainted.date) {
+      clockPainted.date = date;
+      el.clockDate.textContent = date;
+    }
+  }
+
+  function startClock() {
+    if (!el.clock) { return; }
+    // The first anchor is rendered into the markup, so the clock is right on load
+    // rather than blank until the socket connects.
+    anchorClock({
+      epoch: el.clock.getAttribute("data-epoch"),
+      offset_minutes: el.clock.getAttribute("data-offset"),
+      zone: el.clockDate ? el.clockDate.textContent.trim() : ""
+    });
+    // Faster than once a second so the seconds roll over when they should rather
+    // than up to a second late; the paint is skipped unless the text changed. A
+    // background tab throttles this, and the next paint recomputes from Date.now(),
+    // so coming back to the tab corrects itself with no extra bookkeeping.
+    window.setInterval(paintClock, 250);
   }
 
   // ----------------------------------------------------------------- status
@@ -1508,6 +1591,7 @@
       var msg;
       try { msg = JSON.parse(event.data); } catch (err) { return; }
       if (msg.type === "status") {
+        anchorClock(msg.server_clock);
         renderStatus(msg.status || {});
         renderSettings(msg.settings, msg.settings_error);
         renderModifiers(msg.modifiers);
@@ -1611,6 +1695,7 @@
   initTabs();
   initHints();
   initMods();
+  startClock();
 
   el.start.addEventListener("click", function () { system("start requested"); post("/api/start"); });
   el.stop.addEventListener("click", function () { system("stop requested"); post("/api/stop"); });

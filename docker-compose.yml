@@ -284,6 +284,12 @@ services:
       LOG_TAIL_LINES: ${LOG_TAIL_LINES:-200}
       LOG_POLL_SECONDS: ${LOG_POLL_SECONDS:-1.0}
       STATUS_EVERY_N_POLLS: ${STATUS_EVERY_N_POLLS:-2}
+      # The zone the dashboard's clock reads in. A container with no TZ is UTC, which
+      # is rarely the wall clock of whoever is looking at the page -- set this to your
+      # own zone (e.g. TZ=Asia/Jerusalem) and the header clock, not just the log
+      # timestamps, matches the machine. The clock always draws the zone next to the
+      # time, so an unset TZ is visible rather than silently wrong.
+      TZ: ${TZ:-Etc/UTC}
     ports:
       # 0.0.0.0 publishes on EVERY interface the host has. Behind home NAT that
       # means the LAN only; on a VPS or any host with a routable address it is
