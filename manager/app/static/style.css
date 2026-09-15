@@ -65,6 +65,9 @@ h2 { font-size: 15px; letter-spacing: .02em; text-transform: uppercase; color: v
 /* Greyed out, but still hoverable and focusable -- that is the whole point. */
 button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
 
+#mods-world { max-width: 320px; }
+.mods-card .world-action { white-space: nowrap; }
+
 .world-new { margin: 0 0 18px; }
 .world-new label { display: block; margin-bottom: 6px; }
 .world-new .controls { gap: 8px; }
@@ -134,6 +137,7 @@ dialog.confirm .controls { margin-top: 18px; justify-content: flex-end; }
 #panel-console[hidden] { display: none; }
 #panel-settings[hidden] { display: none; }
 #panel-worlds[hidden] { display: none; }
+#panel-mods[hidden] { display: none; }
 
 .status-line { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; }
 /* In the strip the badges sit at the far end, and the strip is their only margin. */

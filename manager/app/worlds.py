@@ -154,8 +154,8 @@ def sanitised_name(raw: str, *, what: str = "world name") -> str:
         raise WorldError(f"The {what} cannot contain control characters.")
     if "/" in name or "\\" in name:
         raise WorldError(
-            f"The {what} is one save name, not a path, so it cannot contain a "
-            "slash or a backslash."
+            f"The {what} cannot contain a slash or a backslash -- it is one name, "
+            "not a path."
         )
     if ":" in name:
         raise WorldError(f"The {what} cannot contain a colon.")

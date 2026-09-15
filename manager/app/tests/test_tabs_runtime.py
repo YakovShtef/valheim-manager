@@ -65,6 +65,7 @@ CASES = [
     "the_new_world_field_explains_itself_on_focus",
     "a_deletable_world_is_never_deleted_straight_off_the_click",
     "the_confirmation_is_wired_for_browsers_that_have_it",
+    "opening_straight_onto_the_mods_tab_does_not_kill_the_dashboard",
     "the_settings_table_shows_plain_names",
     "every_panel_can_take_focus",
     "a_panel_error_survives_a_switch_and_is_marked_in_the_strip",

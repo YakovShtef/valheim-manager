@@ -82,6 +82,15 @@ from .setup import (
     validated_settings,
 )
 from .state_store import ManagerState, StateStore, StateStoreError
+from .mods import (
+    DEFAULT_MAX_MOD_FILES,
+    DEFAULT_MAX_MOD_MB,
+    DEFAULT_GAME_PLUGINS_DIR,
+    DEFAULT_MODS_DIR,
+    DEFAULT_STAGING_PLUGINS_DIR,
+    ModError,
+    ModStore,
+)
 from .worlds import (
     DEFAULT_BACKUPS_DIR,
     DEFAULT_MAX_UPLOAD_FILES,
@@ -211,6 +220,11 @@ class AppConfig:
     # The game server owns this directory; the manager only ever adds worlds to it.
     worlds_dir: str = DEFAULT_WORLDS_DIR
     backups_dir: str = DEFAULT_BACKUPS_DIR
+    mods_dir: str = DEFAULT_MODS_DIR
+    staging_plugins_dir: str = DEFAULT_STAGING_PLUGINS_DIR
+    game_plugins_dir: str = DEFAULT_GAME_PLUGINS_DIR
+    mod_upload_max_bytes: int = DEFAULT_MAX_MOD_MB * 1024 * 1024
+    mod_upload_max_files: int = DEFAULT_MAX_MOD_FILES
     world_upload_max_bytes: int = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024
     world_upload_max_files: int = DEFAULT_MAX_UPLOAD_FILES
     # On the manager-owned `valheim-manager-state` volume, mode 0600.
@@ -243,6 +257,21 @@ def config_from_env() -> AppConfig:
         env_file=os.environ.get("VALHEIM_ENV_FILE", AppConfig.env_file),
         worlds_dir=os.environ.get("VALHEIM_WORLDS_DIR", AppConfig.worlds_dir),
         backups_dir=os.environ.get("VALHEIM_BACKUPS_DIR", AppConfig.backups_dir),
+        mods_dir=os.environ.get("VALHEIM_MODS_DIR", AppConfig.mods_dir),
+        staging_plugins_dir=os.environ.get(
+            "VALHEIM_STAGING_PLUGINS_DIR", AppConfig.staging_plugins_dir
+        ),
+        game_plugins_dir=os.environ.get(
+            "VALHEIM_GAME_PLUGINS_DIR", AppConfig.game_plugins_dir
+        ),
+        mod_upload_max_bytes=_env_int(
+            "MOD_UPLOAD_MAX_MB", DEFAULT_MAX_MOD_MB, minimum=1
+        )
+        * 1024
+        * 1024,
+        mod_upload_max_files=_env_int(
+            "MOD_UPLOAD_MAX_FILES", DEFAULT_MAX_MOD_FILES, minimum=1
+        ),
         world_upload_max_bytes=_env_int(
             "WORLD_UPLOAD_MAX_MB", DEFAULT_MAX_UPLOAD_MB, minimum=1
         )
@@ -380,6 +409,7 @@ def create_app(
     settings: SettingsStore | None = None,
     state_store: StateStore | None = None,
     worlds: WorldStore | None = None,
+    mods: ModStore | None = None,
 ) -> FastAPI:
     _configure_logging()
     config = config or config_from_env()
@@ -394,6 +424,50 @@ def create_app(
         max_upload_files=config.world_upload_max_files,
         backups_dir=config.backups_dir,
     )
+    mod_store = mods or ModStore(
+        config.mods_dir,
+        staging_plugins_dir=config.staging_plugins_dir,
+        game_plugins_dir=config.game_plugins_dir,
+        max_upload_bytes=config.mod_upload_max_bytes,
+        max_upload_files=config.mod_upload_max_files,
+    )
+
+    def _loaded_world() -> str:
+        """The world the next Start will open, or "" when the file cannot be read."""
+        try:
+            return store.read().get("WORLD_NAME", "").strip()
+        except SettingsFileError:
+            return ""
+
+    def _mods_for_the_next_start() -> None:
+        """Put the loaded world's mods in front of BepInEx. Runs just before create.
+
+        Mods are per world, and BepInEx has one plugins folder -- so the set has to be
+        swapped at the last moment before the container reads it. Doing it here rather
+        than on Load also covers the case nobody thinks about: the operator changes
+        nothing, presses Start, and expects the world's own mods.
+        """
+        world = _loaded_world()
+        if not world:
+            return
+        mod_store.sync(world)
+
+    def _container_env() -> dict[str, str]:
+        """The settings file, plus the BepInEx switch the operator never has to flip.
+
+        Automatic by design: a world with mods starts with BepInEx on, one without
+        starts with it off, and nothing has to be remembered. Two things are left
+        alone -- a BEPINEX the operator set themselves, and any install running
+        VALHEIM_PLUS, which the image refuses to run alongside BepInEx.
+        """
+        environment = dict(store.container_env())
+        if "BEPINEX" in environment:
+            return environment
+        if environment.get("VALHEIM_PLUS", "").strip().lower() in ("1", "true", "yes"):
+            return environment
+        world = _loaded_world()
+        environment["BEPINEX"] = "true" if world and mod_store.has_enabled(world) else "false"
+        return environment
 
     auth, credential_source = _resolve_credentials(config, states)
 
@@ -422,13 +496,21 @@ def create_app(
         network=config.network,
         config_volume=config.config_volume,
         data_volume=config.data_volume,
-        env_provider=store.container_env,
+        env_provider=_container_env,
+        before_create=_mods_for_the_next_start,
         port_provider=lambda: _udp_ports(store),
         ready_pattern=config.ready_pattern,
         stop_timeout=config.stop_timeout,
         restart_policy=config.restart_policy,
         api_timeout=config.stop_timeout + 30,
     )
+    # Attached rather than only passed to the constructor above, so an injected
+    # controller gets them too. Staging a world's mods and deciding whether BepInEx
+    # is on are the app's behaviour, not the Docker layer's -- swapping the Docker
+    # plumbing is not a way to opt out of them, and a test that injected a controller
+    # would otherwise exercise a manager that quietly has no mod support at all.
+    control.env_provider = _container_env
+    control.before_create = _mods_for_the_next_start
 
     app = FastAPI(title="Valheim Server Manager", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.config = config
@@ -440,6 +522,7 @@ def create_app(
     app.state.settings = store
     app.state.state_store = states
     app.state.worlds = world_store
+    app.state.mods = mod_store
 
     templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
@@ -563,6 +646,7 @@ def create_app(
                 # The worlds panel states its own caps and says where the worlds live,
                 # all from the store that will actually enforce them.
                 "worlds_dir": str(world_store.root),
+                "mod_upload_max_human": human_size(mod_store.max_upload_bytes),
                 "max_upload_bytes": world_store.max_upload_bytes,
                 "max_upload_human": human_size(world_store.max_upload_bytes),
                 "max_upload_files": world_store.max_upload_files,
@@ -1167,6 +1251,144 @@ def create_app(
                 ),
             )
         )
+
+    def _mods_payload(world: str, **extra: Any) -> dict[str, Any]:
+        """The mods for one world, plus which world that is and the caps."""
+        payload: dict[str, Any] = {
+            "world": world,
+            "mods": [],
+            "mods_error": None,
+            "mod_upload_max_bytes": mod_store.max_upload_bytes,
+            "mod_upload_max_human": human_size(mod_store.max_upload_bytes),
+            "mod_upload_max_files": mod_store.max_upload_files,
+        }
+        try:
+            payload["mods"] = [mod.as_dict() for mod in mod_store.mods(world)] if world else []
+        except (ModError, WorldError) as exc:
+            payload["mods_error"] = str(exc)
+        payload.update(extra)
+        return payload
+
+    def _mod_world(body: dict[str, Any]) -> str:
+        raw = body.get("world")
+        if not isinstance(raw, str) or not raw.strip():
+            raise ModError("Say which world these mods belong to.")
+        return sanitised_world_name(raw)
+
+    @app.get("/api/mods")
+    async def api_mods(request: Request, world: str = "") -> JSONResponse:
+        require_session(request)
+        # Defaults to the world the next Start would open, which is the one the
+        # operator means nine times out of ten.
+        try:
+            chosen = sanitised_world_name(world) if world.strip() else _loaded_world()
+        except WorldError as exc:
+            return JSONResponse({"error": str(exc), **_mods_payload("")}, status_code=400)
+        return JSONResponse(await run_in_threadpool(_mods_payload, chosen))
+
+    def _mod_refused(status_code: int, error: str, world: str = "") -> JSONResponse:
+        log.warning("Mod action refused (%s): %s", status_code, error)
+        payload: dict[str, Any] = {"error": error}
+        payload.update(_mods_payload(world))
+        return JSONResponse(payload, status_code=status_code)
+
+    def _delete_mod(body: dict[str, Any]) -> JSONResponse:
+        try:
+            world = _mod_world(body)
+            name = body.get("name")
+            if not isinstance(name, str):
+                raise ModError("Say which mod to delete.")
+            gone = mod_store.delete(world, name)
+        except (ModError, WorldError) as exc:
+            return _mod_refused(400, str(exc), body.get("world", "") if isinstance(body.get("world"), str) else "")
+        return JSONResponse(
+            _mods_payload(world, deleted=True, message=f"{gone} is gone from {world}.")
+        )
+
+    @app.post("/api/mods/delete")
+    async def api_mod_delete(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_delete_mod, await _json_body(request))
+
+    def _toggle_mod(body: dict[str, Any]) -> JSONResponse:
+        try:
+            world = _mod_world(body)
+            name = body.get("name")
+            if not isinstance(name, str):
+                raise ModError("Say which mod to switch.")
+            mod = mod_store.set_enabled(world, name, body.get("enabled") is True)
+        except (ModError, WorldError) as exc:
+            return _mod_refused(400, str(exc), body.get("world", "") if isinstance(body.get("world"), str) else "")
+        state = "on" if mod.enabled else "off"
+        return JSONResponse(
+            _mods_payload(
+                world,
+                toggled=True,
+                message=(
+                    f"{mod.name} is switched {state}. It takes effect the next time "
+                    "you start the server."
+                ),
+            )
+        )
+
+    @app.post("/api/mods/toggle")
+    async def api_mod_toggle(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_toggle_mod, await _json_body(request))
+
+    def _place_mod(parts: list[tuple[str, Any, int]], world: str, name: str) -> JSONResponse:
+        try:
+            safe_world = sanitised_world_name(world)
+        except WorldError as exc:
+            return _mod_refused(400, str(exc))
+        try:
+            with opened_upload(parts) as (members, suggested):
+                mod = mod_store.place(safe_world, members, name or suggested)
+        except (ModError, WorldError) as exc:
+            return _mod_refused(400, str(exc), safe_world)
+        return JSONResponse(
+            _mods_payload(
+                safe_world,
+                uploaded=True,
+                name=mod.name,
+                message=(
+                    f"Added {mod.name} to {safe_world}. It loads the next time you "
+                    "start the server."
+                ),
+            )
+        )
+
+    @app.post("/api/mods/upload")
+    async def api_mod_upload(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        try:
+            async with request.form(
+                max_files=mod_store.max_upload_files, max_fields=MAX_UPLOAD_FIELDS
+            ) as form:
+                world = form.get("world")
+                name = form.get("name")
+                parts: list[tuple[str, Any, int]] = []
+                for _field, value in form.multi_items():
+                    if isinstance(value, UploadFile):
+                        parts.append((value.filename or "", value.file, _part_size(value)))
+                return await run_in_threadpool(
+                    _place_mod,
+                    parts,
+                    world if isinstance(world, str) else "",
+                    name if isinstance(name, str) else "",
+                )
+        except (MultiPartException, HTTPException) as exc:
+            detail = getattr(exc, "message", None) or getattr(exc, "detail", "") or str(exc)
+            return await run_in_threadpool(
+                _mod_refused, 400, f"That upload could not be read: {detail} Nothing was saved."
+            )
+        except ClientDisconnect:
+            return await run_in_threadpool(
+                _mod_refused, 400, "The upload stopped part-way. Nothing was saved."
+            )
 
     @app.post("/api/worlds/backup")
     async def api_world_backup(request: Request) -> JSONResponse:

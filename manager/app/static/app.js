@@ -47,6 +47,21 @@
     worldsTable: document.getElementById("worlds-table"),
     worldsEmpty: document.getElementById("worlds-empty"),
     worldsError: document.getElementById("worlds-error"),
+    modsRefresh: document.getElementById("btn-mods-refresh"),
+    modsError: document.getElementById("mods-error"),
+    modsWorld: document.getElementById("mods-world"),
+    modsWorldNote: document.getElementById("mods-world-note"),
+    modsTable: document.getElementById("mods-table"),
+    modsBody: document.getElementById("mods-body"),
+    modsEmpty: document.getElementById("mods-empty"),
+    modForm: document.getElementById("mod-upload-form"),
+    modDropzone: document.getElementById("mod-dropzone"),
+    modInput: document.getElementById("mod-file-input"),
+    modPick: document.getElementById("btn-mod-pick"),
+    modSelection: document.getElementById("mod-selection"),
+    modName: document.getElementById("mod-upload-name"),
+    modUpload: document.getElementById("btn-mod-upload"),
+    modReset: document.getElementById("btn-mod-reset"),
     worldNewForm: document.getElementById("world-new-form"),
     worldNewName: document.getElementById("world-new-name"),
     worldNewButton: document.getElementById("btn-world-new"),
@@ -181,6 +196,9 @@
       panel.hidden = !on;
     }
     if (focus) { chosen.focus(); }
+    // Mods are per world, so the list is only meaningful next to the current set of
+    // worlds -- which a switch or a delete on another tab may just have changed.
+    if (tabName(chosen) === "mods") { fillModWorlds(); refreshMods(el.modsWorld.value); }
     // A hidden console cannot scroll. Every scroll metric reads 0 on a display:none
     // box, so append()'s follow-scroll is a no-op for every line that arrives while
     // another tab is up, and the browser restores the OLD offset when the panel comes
@@ -816,6 +834,244 @@
     });
   }
 
+  // ------------------------------------------------------------------- mods
+  //
+  // Mods are per world and BepInEx has one plugins folder, so "which world" is part
+  // of every request here. The panel defaults to the world the next Start would open
+  // -- the one the operator almost always means -- and says so.
+
+  var modWorld = "";
+  var modFiles = [];
+
+  function renderMods(payload) {
+    if (!el.modsBody || !payload) { return; }
+    modWorld = payload.world || "";
+    el.modsError.textContent = payload.mods_error || "";
+    el.modsError.hidden = !payload.mods_error;
+
+    var mods = payload.mods || [];
+    el.modsBody.innerHTML = "";
+    for (var i = 0; i < mods.length; i++) {
+      el.modsBody.appendChild(modRow(mods[i]));
+    }
+    el.modsEmpty.hidden = !!mods.length || !modWorld || !!payload.mods_error;
+    el.modsTable.hidden = !mods.length;
+    el.modsWorldNote.textContent = modWorld
+      ? (modWorld === (lastStatus && lastStatus.active_world ? lastStatus.active_world : activeWorld())
+          ? "This is the world your server loads next."
+          : "Your server is set to load " + (activeWorld() || "another world") + ".")
+      : "No world selected yet.";
+    syncModControls();
+  }
+
+  function activeWorld() {
+    // `lastWorlds` is null until the first /api/worlds answer, and the Mods tab can
+    // be the tab the page OPENS on -- earlier than that.
+    var known = lastWorlds || [];
+    for (var i = 0; i < known.length; i++) {
+      if (known[i].active) { return known[i].name; }
+    }
+    return "";
+  }
+
+  function modRow(mod) {
+    var tr = document.createElement("tr");
+    var name = document.createElement("td");
+    name.className = "world-name";
+    name.textContent = mod.name;
+    if (!mod.enabled) {
+      var off = document.createElement("span");
+      off.className = "tag tag-legacy";
+      off.textContent = "off";
+      name.appendChild(document.createTextNode(" "));
+      name.appendChild(off);
+    }
+    tr.appendChild(name);
+
+    var size = document.createElement("td");
+    size.textContent = mod.size;
+    tr.appendChild(size);
+
+    var action = document.createElement("td");
+    action.className = "world-action";
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ghost";
+    toggle.setAttribute("data-mod-toggle", mod.name);
+    toggle.setAttribute("data-enable", mod.enabled ? "false" : "true");
+    toggle.textContent = mod.enabled ? "Switch off" : "Switch on";
+    action.appendChild(toggle);
+
+    var remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost danger-quiet";
+    remove.setAttribute("data-mod-delete", mod.name);
+    remove.textContent = "Delete";
+    action.appendChild(remove);
+    tr.appendChild(action);
+    return tr;
+  }
+
+  function fillModWorlds() {
+    if (!el.modsWorld) { return; }
+    var known = lastWorlds || [];
+    var chosen = el.modsWorld.value || modWorld;
+    el.modsWorld.innerHTML = "";
+    for (var i = 0; i < known.length; i++) {
+      var option = document.createElement("option");
+      option.value = known[i].name;
+      option.textContent = known[i].name + (known[i].active ? " (loaded next)" : "");
+      el.modsWorld.appendChild(option);
+    }
+    if (chosen) { el.modsWorld.value = chosen; }
+  }
+
+  function refreshMods(world) {
+    if (!el.modsBody) { return Promise.resolve(null); }
+    var query = world ? "?world=" + encodeURIComponent(world) : "";
+    return fetch("/api/mods" + query, { credentials: "same-origin" }).then(function (response) {
+      if (response.status === 401) { window.location.href = "/login"; return null; }
+      return response.json().catch(function () { return null; });
+    }).then(function (payload) {
+      if (payload) { fillModWorlds(); renderMods(payload); }
+      return payload;
+    }).catch(function (err) {
+      showError("Could not read the mods: " + err, "mods");
+      return null;
+    });
+  }
+
+  function syncModControls() {
+    if (!el.modUpload) { return; }
+    var busy = pendingAction;
+    el.modUpload.disabled = busy || !modFiles.length || !modWorld;
+    el.modPick.disabled = busy;
+    el.modName.disabled = busy;
+    el.modsRefresh.disabled = busy;
+    el.modsWorld.disabled = busy;
+    var buttons = el.modsBody.querySelectorAll("button[data-mod-toggle], button[data-mod-delete]");
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = busy; }
+    markTab("mods", el.modsError.hidden ? "" : "error", "error");
+  }
+
+  function setModSelection(files) {
+    modFiles = files;
+    el.modSelection.textContent = files.length
+      ? (files.length === 1 ? files[0].name : files.length + " files")
+      : "Nothing selected yet.";
+    syncModControls();
+  }
+
+  function uploadMod() {
+    if (!modFiles.length || !modWorld) { return; }
+    var body = new FormData();
+    body.append("world", modWorld);
+    body.append("name", el.modName.value);
+    for (var i = 0; i < modFiles.length; i++) {
+      body.append("files", modFiles[i], modFiles[i].webkitRelativePath || modFiles[i].name);
+    }
+    pendingAction = true;
+    syncModControls();
+    system("adding a mod to " + modWorld);
+    fetch("/api/mods/upload", {
+      method: "POST", credentials: "same-origin", body: body
+    }).then(function (response) {
+      if (response.status === 401) { window.location.href = "/login"; return null; }
+      return response.json().catch(function () { return {}; });
+    }).then(function (payload) {
+      pendingAction = false;
+      if (!payload) { return; }
+      if (payload.error) { showError(payload.error, "mods"); }
+      else if (payload.message) { system(payload.message); clearErrorFrom("mods"); }
+      setModSelection([]);
+      el.modName.value = "";
+      el.modInput.value = "";
+      renderMods(payload);
+    }).catch(function (err) {
+      pendingAction = false;
+      showError("The mod did not get through: " + err, "mods");
+      syncModControls();
+    });
+  }
+
+  function modAction(path, body, note) {
+    pendingAction = true;
+    syncModControls();
+    system(note);
+    fetch(path, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (response) {
+      if (response.status === 401) { window.location.href = "/login"; return null; }
+      return response.json().catch(function () { return {}; });
+    }).then(function (payload) {
+      pendingAction = false;
+      if (!payload) { return; }
+      if (payload.error) { showError(payload.error, "mods"); }
+      else if (payload.message) { system(payload.message); clearErrorFrom("mods"); }
+      renderMods(payload);
+    }).catch(function (err) {
+      pendingAction = false;
+      showError("Lost contact with the manager: " + err, "mods");
+      syncModControls();
+    });
+  }
+
+  function initMods() {
+    if (!el.modForm) { return; }
+    el.modsRefresh.addEventListener("click", function () { refreshMods(el.modsWorld.value); });
+    el.modsWorld.addEventListener("change", function () { refreshMods(el.modsWorld.value); });
+    el.modPick.addEventListener("click", function () { el.modInput.click(); });
+    el.modInput.addEventListener("change", function () {
+      setModSelection(Array.prototype.slice.call(el.modInput.files || []));
+    });
+    el.modReset.addEventListener("click", function () {
+      setModSelection([]);
+      el.modName.value = "";
+      el.modInput.value = "";
+    });
+    el.modForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!el.modUpload.disabled) { uploadMod(); }
+    });
+    ["dragenter", "dragover"].forEach(function (name) {
+      el.modDropzone.addEventListener(name, function (event) {
+        event.preventDefault();
+        el.modDropzone.classList.add("is-over");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (name) {
+      el.modDropzone.addEventListener(name, function () {
+        el.modDropzone.classList.remove("is-over");
+      });
+    });
+    el.modDropzone.addEventListener("drop", function (event) {
+      event.preventDefault();
+      var transfer = event.dataTransfer;
+      setModSelection(Array.prototype.slice.call((transfer && transfer.files) || []));
+    });
+    el.modsBody.addEventListener("click", function (event) {
+      var toggle = event.target.closest
+        ? event.target.closest("button[data-mod-toggle]") : null;
+      if (toggle && !toggle.disabled) {
+        modAction("/api/mods/toggle", {
+          world: modWorld,
+          name: toggle.getAttribute("data-mod-toggle"),
+          enabled: toggle.getAttribute("data-enable") === "true"
+        }, "switching " + toggle.getAttribute("data-mod-toggle"));
+        return;
+      }
+      var remove = event.target.closest
+        ? event.target.closest("button[data-mod-delete]") : null;
+      if (remove && !remove.disabled) {
+        modAction("/api/mods/delete", {
+          world: modWorld, name: remove.getAttribute("data-mod-delete")
+        }, "deleting mod " + remove.getAttribute("data-mod-delete"));
+      }
+    });
+  }
+
   // ------------------------------------------------------- delete confirmation
 
   // The world the dialog is currently asking about. Read on confirm rather than bound
@@ -1354,6 +1610,7 @@
 
   initTabs();
   initHints();
+  initMods();
 
   el.start.addEventListener("click", function () { system("start requested"); post("/api/start"); });
   el.stop.addEventListener("click", function () { system("stop requested"); post("/api/stop"); });

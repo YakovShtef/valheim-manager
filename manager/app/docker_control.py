@@ -189,6 +189,7 @@ class DockerControl:
         config_volume: str,
         data_volume: str,
         env_provider: Callable[[], dict[str, str]],
+        before_create: Callable[[], None] | None = None,
         port_provider: Callable[[], list[int]],
         ready_pattern: str,
         stop_timeout: int = 120,
@@ -206,6 +207,11 @@ class DockerControl:
         self.config_volume = config_volume
         self.data_volume = data_volume
         self.env_provider = env_provider
+        # Called immediately before a container is created, while nothing is running.
+        # The mods for the world about to load are put in front of BepInEx here: any
+        # earlier and a switch could still change which world that is; any later and
+        # the container is already reading the plugins folder.
+        self.before_create = before_create
         self.port_provider = port_provider
         self.ready_re = re.compile(ready_pattern, re.IGNORECASE)
         self.ready_pattern = ready_pattern
@@ -434,6 +440,13 @@ class DockerControl:
 
     def _create_container(self) -> Any:
         self._set_action(PHASE_CREATING, "Creating the Valheim container...")
+        if self.before_create is not None:
+            # Never fatal: a mod that cannot be staged is a reason to start without it
+            # and say so, not a reason to refuse to start the server at all.
+            try:
+                self.before_create()
+            except Exception as exc:  # pragma: no cover - logged, not raised
+                log.warning("Could not prepare mods before creating the container: %s", exc)
         try:
             environment = self.env_provider()
         except Exception as exc:

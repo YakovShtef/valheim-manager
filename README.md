@@ -148,6 +148,22 @@ server, press **Edit**, change what you want, press **Save**, then press **Start
 The join password shows as `********`. Leave those stars alone to keep your current
 password; type over them to change it.
 
+### Mods
+
+Mods belong to **a world**, not to the server. Whichever world you load, its mods are
+the ones that load with it — and a world with no mods starts with modding switched off
+entirely. You never touch a setting to make that happen.
+
+Drop in the `.zip` you downloaded, or a single `.dll`. Each mod can be switched **off**
+without deleting it, which is how you find the one that broke your server: turn them
+off one at a time rather than deleting and re-downloading.
+
+> ⚠️ **Your friends need the same mods.** Most Valheim mods have to be installed on
+> every player's PC as well as on the server, or they won't be able to join. A few are
+> server-only — the mod's own page will say which.
+
+Changes take effect the next time you press **Start**.
+
 ### Worlds
 
 Every world saved on your server, which one is loaded, and a box you can drag a
@@ -601,6 +617,30 @@ has no such limit and is offered alongside.
 **For deliberate remote access**, put it behind a VPN, or behind a reverse proxy with
 TLS and set `COOKIE_SECURE=true` plus `ALLOWED_ORIGINS=https://your.host`.
 
+### How per-world mods work
+
+BepInEx has exactly one plugins folder and no concept of "the mods for this world", so
+per-world mods are the dashboard's job, not the framework's.
+
+Mods are stored per world under `/config/mods/<world>/`. Just before a container is
+created, the enabled mods for the world `WORLD_NAME` points at are copied into the
+plugins folder, and `BEPINEX` is set to `true` or `false` to match. A mod switched off
+keeps its bytes under a `.off` suffix and is simply not copied.
+
+Two details that are easy to get wrong:
+
+- **Both plugin folders are written.** The image copies `/config/bepinex/plugins/` into
+  the game install with `rsync -a` and **no `--delete`**, so a mod removed from staging
+  would stay in the install — and the install is on a volume that outlives the
+  container. Writing only the staging folder would leave the previous world's mods
+  loading forever.
+- **A sync never empties the folder.** BepInEx keeps files of its own there. Each sync
+  reads a small manifest of what the dashboard placed last time, removes exactly those,
+  and writes the new set. Anything else is left alone.
+
+`BEPINEX` set by hand in `settings/valheim.env` always wins, and an install running
+`VALHEIM_PLUS=true` is left alone entirely — the image refuses to run both.
+
 ### World modifiers, in full
 
 Valheim's difficulty options live in the settings tab. They're **launch arguments**,
@@ -740,8 +780,8 @@ manager/
 ### Not built yet
 
 Browsing and restoring backups from the dashboard, and admin/ban-list editing. The
-game image keeps taking its own hourly world backups into `/config/backups`
-alongside any you take by hand.
+game image keeps taking its own hourly world backups into `/config/backups` alongside
+any you take by hand.
 
 ---
 

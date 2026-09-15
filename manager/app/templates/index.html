@@ -32,6 +32,10 @@
             aria-controls="panel-worlds" aria-selected="false" tabindex="-1">
       Worlds <span class="tab-note" data-tab-note hidden></span>
     </button>
+    <button type="button" class="tab" role="tab" id="tab-mods" data-tab="mods"
+            aria-controls="panel-mods" aria-selected="false" tabindex="-1">
+      Mods <span class="tab-note" data-tab-note hidden></span>
+    </button>
   </div>
   <p class="status-line">
     <span id="status-badge" class="badge badge-unknown">connecting…</span>
@@ -314,8 +318,8 @@
         {# Doubles as the abort while an upload is in flight -- see app.js. #}
         <button type="button" id="btn-world-reset" class="ghost">Clear</button>
       </div>
-    </form>
-  </section>
+
+
 
   {# Deleting is the one action here that destroys data, so it asks first -- and the
      question names the world and what it is about to remove rather than asking
@@ -339,6 +343,82 @@
       <button type="button" id="btn-delete-confirm" class="danger">Delete forever</button>
     </div>
   </dialog>
+</div>
+
+{# Mods belong to a world, not to the server: BepInEx has one plugins folder, so
+ the manager swaps the right set into it before the container is created. #}
+<div id="panel-mods" class="tabpanel" role="tabpanel" aria-labelledby="tab-mods"
+   tabindex="0" hidden>
+<section class="card mods-card">
+  <h2>
+    Mods
+    <button id="btn-mods-refresh" class="ghost small">Refresh</button>
+  </h2>
+
+  <p id="mods-error" class="banner banner-error" role="alert" hidden></p>
+
+  <p class="muted">
+    Mods belong to a world, not to the server. Whichever world you load, its mods
+    are the ones that load with it &mdash; and a world with no mods starts with
+    modding switched off entirely. Changes take effect the next time you press
+    <strong>Start</strong>.
+  </p>
+  <p class="banner">
+    <strong>Your friends need the same mods.</strong> Most Valheim mods have to be
+    installed on every player's PC as well as here, or they will not be able to
+    join. A few are server-only; the mod's own page will say.
+  </p>
+
+  <label for="mods-world">World</label>
+  <select id="mods-world"></select>
+  <p id="mods-world-note" class="muted small"></p>
+
+  <table class="settings" id="mods-table">
+    <thead>
+      <tr>
+        <th scope="col">Mod</th>
+        <th scope="col">Size</th>
+        <th scope="col"><span class="visually-hidden">Action</span></th>
+      </tr>
+    </thead>
+    <tbody id="mods-body"></tbody>
+  </table>
+  <p id="mods-empty" class="muted small" hidden>
+    No mods for this world yet. Drop one below.
+  </p>
+
+  <form id="mod-upload-form" class="settings-form" autocomplete="off"
+        data-max-human="{{ mod_upload_max_human }}">
+    <div id="mod-dropzone" class="dropzone" tabindex="0" role="group"
+         aria-labelledby="mod-dropzone-label">
+      <p id="mod-dropzone-label"><strong>Drop a mod here to add it</strong></p>
+      <p class="muted small">
+        The <code>.zip</code> you downloaded, or a single <code>.dll</code>. Up to
+        {{ mod_upload_max_human }} each.
+      </p>
+      <div class="controls">
+        <button type="button" id="btn-mod-pick" class="ghost small">Choose a file…</button>
+      </div>
+      <input type="file" id="mod-file-input" multiple hidden>
+    </div>
+  </form>
+</section>
+
+
+      <p id="mod-selection" class="muted small" role="status" aria-live="polite">
+        Nothing selected yet.
+      </p>
+
+      <label for="mod-upload-name">Name for it</label>
+      <input id="mod-upload-name" name="name" type="text" spellcheck="false"
+             placeholder="taken from the file name">
+
+      <div class="controls">
+        <button type="submit" id="btn-mod-upload" class="primary" disabled>Add mod</button>
+        <button type="button" id="btn-mod-reset" class="ghost">Clear</button>
+      </div>
+    </form>
+  </section>
 </div>
 {% endblock %}
 

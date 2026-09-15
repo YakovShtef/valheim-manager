@@ -86,6 +86,8 @@ services:
       # root and the manager runs as uid 10001, which is why installing on native
       # Linux used to begin with `sudo chown -R 10001:10001 settings`.
       - ${VALHEIM_SETTINGS_DIR:-./settings}:/srv/settings
+      # The game install, so the live BepInEx plugins folder can be prepared too.
+      - valheim-data:/opt/valheim
     # `$$` is a literal `$` for the shell: Compose interpolates `$` in this file, so
     # an unescaped $dir would be substituted away to nothing before sh ever sees it.
     #
@@ -105,6 +107,22 @@ services:
         mkdir -p /srv/settings 2>/dev/null || true
         chown -R "$$uid:$$gid" /srv/settings 2>/dev/null || true
         chmod 775 /srv/settings 2>/dev/null || true
+        # Backups, mods, and the folder the image expects staged plugins in. All
+        # created here so a first backup or a first mod upload does not have to wait
+        # for the game server to make them.
+        for d in /config/backups /config/mods /config/bepinex /config/bepinex/plugins; do
+          mkdir -p "$$d" 2>/dev/null || true
+          chgrp "$$gid" "$$d" 2>/dev/null || true
+          chmod 2775 "$$d" 2>/dev/null || true
+        done
+        # The live plugins folder, only if BepInEx is already installed: creating it
+        # early could confuse the installer that owns that tree.
+        live=/opt/valheim/bepinex/BepInEx/plugins
+        if [ -d "$$live" ]; then
+          chgrp -R "$$gid" "$$live" 2>/dev/null || true
+          chmod -R g+rwX "$$live" 2>/dev/null || true
+          chmod g+s "$$live" 2>/dev/null || true
+        fi
         mkdir -p "$$dir" 2>/dev/null || true
         chgrp -R "$$gid" "$$dir" 2>/dev/null || true
         # setgid, so worlds the game creates from here on land in the shared group
@@ -239,6 +257,17 @@ services:
       # game's own config volume (mounted below). The game container sees the same
       # path; its mount is unchanged.
       VALHEIM_WORLDS_DIR: /config/worlds_local
+      # Where a manual backup is written -- the same folder the game server keeps its
+      # own hourly ones in, so there is one place to look.
+      VALHEIM_BACKUPS_DIR: ${VALHEIM_BACKUPS_DIR:-/config/backups}
+      # Mods, stored per world by the manager, and the two plugin folders they are
+      # synced into before a container is created: the one the image copies from, and
+      # the one the game actually loads.
+      VALHEIM_MODS_DIR: ${VALHEIM_MODS_DIR:-/config/mods}
+      VALHEIM_STAGING_PLUGINS_DIR: /config/bepinex/plugins
+      VALHEIM_GAME_PLUGINS_DIR: /opt/valheim/bepinex/BepInEx/plugins
+      MOD_UPLOAD_MAX_MB: ${MOD_UPLOAD_MAX_MB:-256}
+      MOD_UPLOAD_MAX_FILES: ${MOD_UPLOAD_MAX_FILES:-2000}
       # Largest world one upload may carry, in whole megabytes. A long-played world
       # runs to a few hundred MB of chunks; past this the upload is refused before
       # anything is written.
@@ -280,6 +309,12 @@ services:
       # and otherwise says so and points at pressing Start once. It only ever ADDS
       # worlds, and never deletes one.
       - valheim-config:/config
+      # The game install, for /opt/valheim/bepinex/BepInEx/plugins. The image copies
+      # staged plugins in with `rsync -a` and no `--delete`, so a mod removed from
+      # staging stays in the install -- and the install outlives the container. The
+      # manager writes that folder itself, or per-world mods would not survive a
+      # switch. It only ever removes what it placed there.
+      - valheim-data:/opt/valheim
     networks:
       - frontend
       - docker-proxy

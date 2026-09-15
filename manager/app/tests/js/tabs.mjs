@@ -24,7 +24,7 @@ const HTML = readFileSync(htmlPath, "utf8");
 const APP = readFileSync(appPath, "utf8");
 const CSS = readFileSync(cssPath, "utf8");
 
-const PANELS = ["panel-console", "panel-settings", "panel-worlds"];
+const PANELS = ["panel-console", "panel-settings", "panel-worlds", "panel-mods"];
 const SCROLL_HEIGHT = 9999;
 const CLIENT_HEIGHT = 300;
 
@@ -139,11 +139,18 @@ function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
   return {
     win, doc, fetches, xhrs, sockets, scrollWrites, push, status,
     setWorlds: (payload) => { worldsPayload = payload; },
+    // Ancestor-aware on purpose. getComputedStyle reports the ELEMENT's own display,
+    // so a panel nested inside another panel reads as "block" while being completely
+    // invisible -- which is exactly how a fourth panel once shipped inside the third.
     // A panel id that is not on the page counts as not shown rather than throwing:
     // one case deliberately renders a tab pointing at a panel that does not exist.
     shown: () => PANELS.filter((id) => {
-      const panel = doc.getElementById(id);
-      return panel && win.getComputedStyle(panel).display !== "none";
+      let node = doc.getElementById(id);
+      while (node && node !== doc.documentElement) {
+        if (win.getComputedStyle(node).display === "none" || node.hidden) { return false; }
+        node = node.parentElement;
+      }
+      return !!doc.getElementById(id);
     }),
     selected: () => [...doc.querySelectorAll("[role=tab]")]
       .filter((b) => b.getAttribute("aria-selected") === "true").map((b) => b.dataset.tab),
@@ -329,10 +336,11 @@ check("the_keyboard_walks_the_strip", () => {
 
   eq(step("ArrowRight").tab, "settings", "ArrowRight from console");
   eq(step("ArrowRight").tab, "worlds", "ArrowRight from settings");
+  eq(step("ArrowRight").tab, "mods", "ArrowRight from worlds");
   eq(step("ArrowRight").tab, "console", "ArrowRight wraps past the last tab");
-  eq(step("ArrowLeft").tab, "worlds", "ArrowLeft wraps past the first tab");
+  eq(step("ArrowLeft").tab, "mods", "ArrowLeft wraps past the first tab");
   eq(step("Home").tab, "console", "Home");
-  eq(step("End").tab, "worlds", "End");
+  eq(step("End").tab, "mods", "End");
   eq(p.stops().length, 1, "more than one tab stop after moving");
 
   p.tab("settings").focus();
@@ -347,7 +355,7 @@ check("the_keyboard_walks_the_strip", () => {
 
 check("exactly_one_panel_is_ever_visible", () => {
   const p = makePage();
-  for (const name of ["settings", "worlds", "console", "worlds", "settings"]) {
+  for (const name of ["settings", "worlds", "mods", "console", "mods", "settings"]) {
     p.tab(name).click();
     eq(p.shown(), ["panel-" + name], `visible panels after selecting ${name}`);
   }
@@ -463,6 +471,24 @@ check("the_confirmation_is_wired_for_browsers_that_have_it", async () => {
   eq(confirm.className.indexOf("danger") !== -1, true, "the destructive button is not marked as one");
 });
 
+check("opening_straight_onto_the_mods_tab_does_not_kill_the_dashboard", async () => {
+  // The Mods tab can be the tab the page OPENS on, which is earlier than the first
+  // /api/worlds answer -- so the world list it wants is still null at that moment.
+  // Throwing there happens at module scope and takes the rest of the IIFE with it:
+  // no socket, no console, no buttons. Landing on the tab is the whole test.
+  const p = makePage({ stored: "mods" });
+  await p.settle();
+
+  eq(p.selected(), ["mods"], "the stored tab was not restored");
+  eq(p.shown(), ["panel-mods"], "visible panels");
+  // The proof that init survived: everything after initTabs still ran.
+  eq(p.sockets.length, 1, "the socket never opened -- init threw");
+  p.status("stopped");
+  eq(p.doc.getElementById("btn-start").disabled, false, "the controls never came alive");
+  p.tab("console").click();
+  eq(p.shown(), ["panel-console"], "the tabs stopped working");
+});
+
 check("the_settings_table_shows_plain_names", () => {
   // The editor's labels and the read-only table used to disagree about what the same
   // row was called. The manager names each setting now; the table has to use it.
@@ -479,7 +505,7 @@ check("every_panel_can_take_focus", () => {
   // deliberately left open to show.
   const p = makePage();
   p.status("ready");
-  for (const name of ["console", "settings", "worlds"]) {
+  for (const name of ["console", "settings", "worlds", "mods"]) {
     p.tab(name).click();
     const panel = p.doc.getElementById("panel-" + name);
     eq(panel.getAttribute("tabindex"), "0", `${name} panel is not focusable`);

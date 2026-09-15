@@ -65,6 +65,7 @@ from app.setup import (
     validated_modifiers,
     validated_settings,
 )
+from app.mods import ModStore
 from app.worlds import (
     LAYOUT_LEGACY,
     LAYOUT_MODERN,
@@ -5082,7 +5083,7 @@ def test_every_upload_refusal_is_logged_on_the_host(worlds, caplog):
 # keyboard and the screen reader depend on is internally consistent.
 # =====================================================================
 
-PANEL_IDS = ["panel-console", "panel-settings", "panel-worlds"]
+PANEL_IDS = ["panel-console", "panel-settings", "panel-worlds", "panel-mods"]
 
 TAB_BUTTON_RE = re.compile(r"<button[^>]*\brole=\"tab\"[^>]*>", re.S)
 
@@ -5115,7 +5116,7 @@ def test_the_dashboard_lands_on_the_console_tab(stack):
         page = client.get("/").text
 
     tabs = _tab_attributes(page)
-    assert [tab["data-tab"] for tab in tabs] == ["console", "settings", "worlds"]
+    assert [tab["data-tab"] for tab in tabs] == ["console", "settings", "worlds", "mods"]
 
     selected = [tab for tab in tabs if tab["aria-selected"] == "true"]
     assert len(selected) == 1, "exactly one tab may be selected"
@@ -5125,8 +5126,38 @@ def test_the_dashboard_lands_on_the_console_tab(stack):
     # ...and the Console panel is the only one showing.
     panels = _panels(page)
     assert "hidden" not in panels["panel-console"].split(">")[0]
-    for panel_id in ("panel-settings", "panel-worlds"):
+    for panel_id in ("panel-settings", "panel-worlds", "panel-mods"):
         assert "hidden" in panels[panel_id].split(">")[0], panel_id
+
+
+def test_no_panel_is_nested_inside_another_panel(stack):
+    """A panel inside another panel can never be shown: hiding the outer one hides it
+    too, while `getComputedStyle` on the inner one still reports `block` -- so the
+    obvious visibility check misses it completely. The mods panel shipped inside the
+    worlds panel exactly once, and read as visible the whole time."""
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    # One pass over the document, carrying the open-tag stack, so each panel reports
+    # what it is actually inside rather than what a slice of text suggests.
+    ancestors: dict[str, list[str]] = {}
+    stack_of: list[str] = []
+    for match in re.finditer("<(/?)div([^>]*)>", page):
+        if match.group(1):
+            if stack_of:
+                stack_of.pop()
+            continue
+        found = re.search(r'id="([^"]+)"', match.group(2))
+        name = found.group(1) if found else ""
+        if name in PANEL_IDS:
+            ancestors[name] = list(stack_of)
+        stack_of.append(name)
+
+    assert sorted(ancestors) == sorted(PANEL_IDS), f"a panel was never found: {ancestors}"
+    for panel_id, chain in ancestors.items():
+        inside = [name for name in chain if name in PANEL_IDS]
+        assert inside == [], f"{panel_id} is nested inside {inside}"
 
 
 def test_the_tab_wiring_is_internally_consistent(stack):
@@ -5184,6 +5215,10 @@ def test_all_three_panels_are_rendered_on_every_load(stack):
     # The worlds panel, with its table and its upload form.
     for needle in ('id="worlds-table"', 'id="world-upload-form"', 'id="world-dropzone"'):
         assert needle in panels["panel-worlds"], needle
+
+    # The mods panel: which world, the list, and the drop zone.
+    for needle in ('id="mods-world"', 'id="mods-table"', 'id="mod-dropzone"'):
+        assert needle in panels["panel-mods"], needle
 
     # And nothing leaked across: a control in two panels is a duplicate id.
     assert 'id="btn-start"' not in panels["panel-settings"] + panels["panel-worlds"]
@@ -5862,6 +5897,368 @@ def test_the_panel_offers_a_backup_on_every_row_including_the_active_one(worlds)
     row = js[js.index("function worldRow(") : js.index("function backupButton(")]
     # Both branches of the row -- the active world and every other -- add one.
     assert row.count("backupButton(world)") == 2
+
+
+def test_every_folder_the_manager_writes_to_is_prepared_for_it(project_root):
+    """Compose wiring has no other test, and that is exactly how it goes missing: the
+    manual-backup change lost its compose half between being written and being
+    committed, and nothing noticed until the feature was tried on a real server. Every
+    directory the manager writes to belongs to the game server, so every one of them
+    has to appear in the one-shot fixer."""
+    block = _compose_block(project_root, "permissions")
+    for directory in (
+        "/config/worlds_local",   # worlds: upload, switch, delete
+        "/config/backups",        # manual backups
+        "/config/mods",           # per-world mods
+        "/config/bepinex/plugins",  # what the image copies staged plugins from
+        "/srv/settings",          # valheim.env
+    ):
+        assert directory in block, f"the fixer never prepares {directory}"
+
+
+def test_the_manager_is_told_where_each_of_those_folders_is(project_root):
+    """A path the fixer prepares and the manager never hears about is a path the
+    manager is not using."""
+    block = _compose_block(project_root, "manager")
+    for name in (
+        "VALHEIM_WORLDS_DIR",
+        "VALHEIM_BACKUPS_DIR",
+        "VALHEIM_MODS_DIR",
+        "VALHEIM_STAGING_PLUGINS_DIR",
+        "VALHEIM_GAME_PLUGINS_DIR",
+    ):
+        assert f"{name}:" in block, f"{name} is never passed to the manager"
+
+
+def test_the_manager_mounts_the_game_install_for_the_plugins_folder(project_root):
+    """Per-world mods depend on it. The image's own copy into the install has no
+    --delete, so a mod removed from staging stays live -- and the install is on a
+    volume that outlives the container. Without this mount the manager can write the
+    staging folder and the game still loads the previous world's mods."""
+    block = _compose_block(project_root, "manager")
+    assert "valheim-data:/opt/valheim" in block
+    fixer = _compose_block(project_root, "permissions")
+    assert "valheim-data:/opt/valheim" in fixer
+
+
+# =====================================================================
+# Per-world mods.
+#
+# BepInEx has exactly one plugins folder and no concept of "the mods for this
+# world", so the per-world promise is entirely this manager's to keep: the right
+# set has to be in that folder before the container is created, and the previous
+# world's set has to be gone. The image's own copy into the game install uses
+# `rsync -a` with no `--delete`, so a removal that only touched staging would never
+# reach the game -- which is why both folders are written here.
+# =====================================================================
+
+
+@pytest.fixture
+def modded(env_file, fake_docker, worlds_dir, tmp_path):
+    """The app with a mod store pointed at inspectable folders."""
+    config = build_config(env_file, worlds_dir=str(worlds_dir))
+    store = ModStore(
+        tmp_path / "mods",
+        staging_plugins_dir=tmp_path / "staging-plugins",
+        game_plugins_dir=tmp_path / "game-plugins",
+    )
+    control = build_control(config, fake_docker)
+    app = create_app(
+        config=config,
+        controller=control,
+        settings=SettingsStore(env_file),
+        mods=store,
+    )
+    return {
+        "app": app, "config": config, "control": control, "docker": fake_docker,
+        "mods": store, "dir": worlds_dir, "env": env_file,
+        "staging": tmp_path / "staging-plugins", "game": tmp_path / "game-plugins",
+    }
+
+
+def upload_mod(client: TestClient, world: str, parts, *, name: str = "", origin: str = ORIGIN):
+    files = [("files", (filename, payload)) for filename, payload in parts]
+    return client.post(
+        "/api/mods/upload",
+        data={"world": world, "name": name},
+        files=files,
+        headers={"Origin": origin},
+    )
+
+
+def toggle_mod(client, world, name, enabled, *, origin: str = ORIGIN):
+    return client.post(
+        "/api/mods/toggle",
+        json={"world": world, "name": name, "enabled": enabled},
+        headers={"Origin": origin},
+    )
+
+
+def delete_mod(client, world, name, *, origin: str = ORIGIN):
+    return client.post(
+        "/api/mods/delete", json={"world": world, "name": name}, headers={"Origin": origin}
+    )
+
+
+def test_a_dll_uploads_and_is_listed_for_that_world(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        response = upload_mod(client, "Seedy", [("EpicLoot.dll", b"x" * 64)])
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["uploaded"] is True
+    assert [mod["name"] for mod in payload["mods"]] == ["EpicLoot.dll"]
+    assert payload["mods"][0]["enabled"] is True
+
+
+def test_a_zip_uploads_as_one_mod_the_operator_can_switch_off_in_one_press(modded):
+    archive = zip_bytes([
+        ("Jotunn/Jotunn.dll", b"y" * 32),
+        ("Jotunn/config/settings.cfg", b"k=v"),
+    ])
+
+    with TestClient(modded["app"]) as client:
+        login(client)
+        response = upload_mod(client, "Seedy", [("Jotunn.zip", archive)])
+
+    assert response.status_code == 200, response.text
+    mods = response.json()["mods"]
+    assert [mod["name"] for mod in mods] == ["Jotunn"]
+    assert mods[0]["directory"] is True
+    assert mods[0]["files"] == 2
+
+
+def test_mods_belong_to_one_world_and_are_not_shared(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Seedy", [("EpicLoot.dll", b"x")])
+        upload_mod(client, "Other", [("Valheimplus.dll", b"y")])
+
+        seedy = client.get("/api/mods", params={"world": "Seedy"}).json()
+        other = client.get("/api/mods", params={"world": "Other"}).json()
+
+    assert [mod["name"] for mod in seedy["mods"]] == ["EpicLoot.dll"]
+    assert [mod["name"] for mod in other["mods"]] == ["Valheimplus.dll"]
+
+
+def test_switching_a_mod_off_keeps_the_file(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Seedy", [("EpicLoot.dll", b"x" * 64)])
+
+        off = toggle_mod(client, "Seedy", "EpicLoot.dll", False)
+        assert off.status_code == 200, off.text
+        assert off.json()["mods"][0]["enabled"] is False
+        # The bytes are still there -- that is the difference between off and deleted.
+        assert off.json()["mods"][0]["size_bytes"] == 64
+
+        on = toggle_mod(client, "Seedy", "EpicLoot.dll", True)
+        assert on.json()["mods"][0]["enabled"] is True
+
+
+def test_deleting_a_mod_removes_it(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Seedy", [("EpicLoot.dll", b"x")])
+        response = delete_mod(client, "Seedy", "EpicLoot.dll")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["mods"] == []
+
+
+# ------------------------------------------------- what the game actually sees
+
+
+def test_starting_puts_the_loaded_worlds_mods_in_front_of_bepinex(modded):
+    """The whole feature in one test: the set that reaches the plugins folder is the
+    set belonging to the world WORLD_NAME points at."""
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Dedicated", [("EpicLoot.dll", b"x" * 16)])
+        upload_mod(client, "Other", [("SomethingElse.dll", b"y" * 16)])
+
+    modded["control"].start()
+
+    staged = sorted(p.name for p in modded["staging"].iterdir() if not p.name.startswith("."))
+    assert staged == ["EpicLoot.dll"], staged
+
+
+def test_switching_worlds_takes_the_previous_worlds_mods_away(modded):
+    """The image's copy into the game install has no --delete, and the install is on a
+    volume that outlives the container -- so a mod left there would keep loading for a
+    world that never had it."""
+    game = modded["game"]
+    game.mkdir(parents=True, exist_ok=True)
+
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Dedicated", [("EpicLoot.dll", b"x" * 16)])
+
+    modded["control"].start()
+    assert (game / "EpicLoot.dll").exists()
+
+    # WORLD_NAME now points at a world with no mods at all.
+    store = SettingsStore(modded["env"])
+    store.write({**store.read(), "WORLD_NAME": "Other"})
+    # The real path a switch takes: stop, remove the container, start a new one.
+    modded["control"].stop()
+    modded["control"].remove_stopped_container()
+    modded["control"].start()
+
+    assert not (game / "EpicLoot.dll").exists(), "the previous world's mod is still loaded"
+
+
+def test_a_sync_never_removes_a_file_it_did_not_put_there(modded):
+    """BepInEx keeps files of its own in that folder, and the operator may have put
+    something there by hand. Emptying the directory would take both."""
+    game = modded["game"]
+    game.mkdir(parents=True, exist_ok=True)
+    (game / "BepInEx.Core.dll").write_bytes(b"core")
+
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Dedicated", [("EpicLoot.dll", b"x")])
+
+    modded["control"].start()
+    modded["control"].stop()
+    modded["control"].remove_stopped_container()
+    store = SettingsStore(modded["env"])
+    store.write({**store.read(), "WORLD_NAME": "Other"})
+    modded["control"].start()
+
+    assert (game / "BepInEx.Core.dll").read_bytes() == b"core"
+
+
+def test_a_mod_switched_off_is_not_put_in_front_of_the_game(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Dedicated", [("EpicLoot.dll", b"x")])
+        toggle_mod(client, "Dedicated", "EpicLoot.dll", False)
+
+    modded["control"].start()
+
+    staged = [p.name for p in modded["staging"].iterdir() if not p.name.startswith(".")]
+    assert staged == [], staged
+
+
+# --------------------------------------------------------- the BepInEx switch
+
+
+def test_bepinex_is_switched_on_for_a_world_with_mods(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Dedicated", [("EpicLoot.dll", b"x")])
+
+    modded["control"].start()
+
+    created = modded["docker"].containers.create_calls[0]
+    assert created["environment"]["BEPINEX"] == "true"
+
+
+def test_bepinex_is_switched_off_for_a_world_with_none(modded):
+    """A world with no mods must not start with modding on: BepInEx changes how the
+    server boots, and nobody asked for it."""
+    modded["control"].start()
+
+    created = modded["docker"].containers.create_calls[0]
+    assert created["environment"]["BEPINEX"] == "false"
+
+
+def test_a_world_whose_mods_are_all_switched_off_starts_unmodded(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Dedicated", [("EpicLoot.dll", b"x")])
+        toggle_mod(client, "Dedicated", "EpicLoot.dll", False)
+
+    modded["control"].start()
+
+    created = modded["docker"].containers.create_calls[0]
+    assert created["environment"]["BEPINEX"] == "false"
+
+
+def test_a_bepinex_the_operator_set_themselves_is_left_alone(modded):
+    """Automatic is a default, not an override."""
+    store = SettingsStore(modded["env"])
+    store.write({**store.read(), "BEPINEX": "true"})
+
+    modded["control"].start()
+
+    created = modded["docker"].containers.create_calls[0]
+    assert created["environment"]["BEPINEX"] == "true"
+
+
+def test_valheim_plus_is_never_given_bepinex_alongside_it(modded):
+    """The image refuses to run both, so switching BepInEx on under a ValheimPlus
+    install would stop the server booting at all."""
+    modded["env"].write_text(
+        modded["env"].read_text(encoding="utf-8") + chr(10) + "VALHEIM_PLUS=true" + chr(10),
+        encoding="utf-8",
+    )
+
+    modded["control"].start()
+
+    created = modded["docker"].containers.create_calls[0]
+    assert "BEPINEX" not in created["environment"]
+
+
+# ------------------------------------------------------------------ refusals
+
+
+@pytest.mark.parametrize("raw", ["../escape", "a/b", "", "   ", ".."])
+def test_a_mod_name_that_is_not_one_name_is_refused(modded, raw):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Seedy", [("EpicLoot.dll", b"x")])
+        response = delete_mod(client, "Seedy", raw)
+
+    assert response.status_code == 400
+    assert [mod["name"] for mod in response.json()["mods"]] == ["EpicLoot.dll"]
+
+
+def test_uploading_the_same_mod_twice_is_refused_rather_than_overwritten(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        upload_mod(client, "Seedy", [("EpicLoot.dll", b"x" * 10)])
+        response = upload_mod(client, "Seedy", [("EpicLoot.dll", b"y" * 99)])
+
+    assert response.status_code == 400
+    assert "already has a mod called" in response.json()["error"]
+    assert response.json()["mods"][0]["size_bytes"] == 10
+
+
+def test_an_upload_with_nothing_a_mod_could_be_is_refused(modded):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        response = upload_mod(client, "Seedy", [("readme.txt", b"hello")])
+
+    assert response.status_code == 400
+    assert "does not look like a mod" in response.json()["error"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda client: client.post("/api/mods/delete", json={"world": "S", "name": "m"}),
+        lambda client: client.post("/api/mods/toggle", json={"world": "S", "name": "m", "enabled": False}),
+        lambda client: client.post("/api/mods/upload", data={"world": "S"}, files=[("files", ("a.dll", b"x"))]),
+    ],
+)
+def test_every_mod_action_needs_the_origin_header(modded, call):
+    with TestClient(modded["app"]) as client:
+        login(client)
+        assert call(client).status_code == 403
+
+
+def test_the_mods_panel_says_players_need_the_same_mods(modded):
+    """Most Valheim mods are client-side too. A dashboard that let someone add one
+    without saying so produces a server their friends silently cannot join."""
+    with TestClient(modded["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    words = " ".join(page.split())
+    assert "Your friends need the same mods" in words
 
 
 # =====================================================================
