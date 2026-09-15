@@ -9,15 +9,44 @@
   </form>
 </header>
 
+{# Outside the panels on purpose: an action that fails while another tab is showing
+   would otherwise put its message somewhere nobody is looking. #}
 <p id="banner" class="banner" role="alert" hidden></p>
 
-<section class="grid">
-  <div class="card">
+{# The tab strip. The phase badge lives HERE rather than in the Status card, so the
+   reason a Settings or Worlds control is locked -- the server being up -- is on
+   screen whichever tab is showing, and a locked panel is never a surprise. #}
+<div class="tabs">
+  <div class="tablist" role="tablist" aria-label="Dashboard sections">
+    {# Console first, and selected in the markup: it is the landing tab, so the page
+       is usable in the instant before app.js restores a stored choice. #}
+    <button type="button" class="tab" role="tab" id="tab-console" data-tab="console"
+            aria-controls="panel-console" aria-selected="true" tabindex="0">
+      Console <span class="tab-note" data-tab-note hidden></span>
+    </button>
+    <button type="button" class="tab" role="tab" id="tab-settings" data-tab="settings"
+            aria-controls="panel-settings" aria-selected="false" tabindex="-1">
+      Server settings <span class="tab-note" data-tab-note hidden></span>
+    </button>
+    <button type="button" class="tab" role="tab" id="tab-worlds" data-tab="worlds"
+            aria-controls="panel-worlds" aria-selected="false" tabindex="-1">
+      Worlds <span class="tab-note" data-tab-note hidden></span>
+    </button>
+  </div>
+  <p class="status-line">
+    <span id="status-badge" class="badge badge-unknown">connecting…</span>
+    <span id="link-badge" class="badge badge-unknown" title="WebSocket connection">live</span>
+  </p>
+</div>
+
+{# tabindex on the panels, not just the strip: while the server runs the settings
+   panel holds nothing focusable (Edit is disabled, the form is hidden), so without
+   this a keyboard operator tabs straight out of the page instead of into the values
+   the panel was kept open to show. #}
+<div id="panel-console" class="tabpanel" role="tabpanel" aria-labelledby="tab-console"
+     tabindex="0">
+  <section class="card">
     <h2>Status</h2>
-    <p class="status-line">
-      <span id="status-badge" class="badge badge-unknown">connecting…</span>
-      <span id="link-badge" class="badge badge-unknown" title="WebSocket connection">live</span>
-    </p>
     <p id="status-message" class="muted">Waiting for the first status push…</p>
     <dl class="kv">
       <dt>Container</dt><dd id="meta-container">{{ container_name }}</dd>
@@ -31,9 +60,23 @@
       <button id="btn-restart" class="ghost" disabled>Restart</button>
       <button id="btn-force" class="danger" hidden>Force stop</button>
     </div>
-  </div>
+  </section>
 
-  <div class="card">
+  {# The console is never rebuilt: hiding this panel leaves the <pre>'s scrollback,
+     its scroll position, the follow checkbox and the WebSocket exactly as they are. #}
+  <section class="card console-card">
+    <h2>
+      Live console
+      <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
+      <button id="btn-clear" class="ghost small">Clear</button>
+    </h2>
+    <pre id="console" class="console" aria-live="polite"></pre>
+  </section>
+</div>
+
+<div id="panel-settings" class="tabpanel" role="tabpanel" aria-labelledby="tab-settings"
+     tabindex="0" hidden>
+  <section class="card">
     <h2>
       Current settings
       <button id="btn-settings-edit" class="ghost small" disabled>Edit</button>
@@ -163,109 +206,103 @@
         <button type="button" id="btn-settings-cancel" class="ghost">Cancel</button>
       </div>
     </form>
-  </div>
-</section>
+  </section>
+</div>
 
-<section class="card worlds-card">
-  <h2>
-    Worlds
-    <button id="btn-worlds-refresh" class="ghost small">Refresh</button>
-  </h2>
+<div id="panel-worlds" class="tabpanel" role="tabpanel" aria-labelledby="tab-worlds"
+     tabindex="0" hidden>
+  <section class="card worlds-card">
+    <h2>
+      Worlds
+      <button id="btn-worlds-refresh" class="ghost small">Refresh</button>
+    </h2>
 
-  {# Filled in by app.js with the same reason the settings panel gives, and only
-     while the server is not off. A live region: the reason arrives from a status
-     push, not from a page load. #}
-  <p id="worlds-locked" class="muted small" role="status" aria-live="polite" hidden></p>
-  <p id="worlds-error" class="banner banner-error" role="alert" hidden></p>
+    {# Filled in by app.js with the same reason the settings panel gives, and only
+       while the server is not off. A live region: the reason arrives from a status
+       push, not from a page load. #}
+    <p id="worlds-locked" class="muted small" role="status" aria-live="polite" hidden></p>
+    <p id="worlds-error" class="banner banner-error" role="alert" hidden></p>
 
-  <p class="muted">
-    The worlds on the <code>{{ config_volume }}</code> volume, under
-    <code>{{ worlds_dir }}</code>. <strong>Load</strong> points
-    <code>WORLD_NAME</code> at one and removes the stopped container, so the next
-    <strong>Start</strong> loads that world &mdash; the same path the settings panel
-    takes, and it works only while the server is off. Uploading is how a world you
-    generated locally reaches the server, which is also the only way to choose a
-    <em>seed</em>: the dedicated server takes no seed argument.
-  </p>
+    <p class="muted">
+      The worlds on the <code>{{ config_volume }}</code> volume, under
+      <code>{{ worlds_dir }}</code>. <strong>Load</strong> points
+      <code>WORLD_NAME</code> at one and removes the stopped container, so the next
+      <strong>Start</strong> loads that world &mdash; the same path the settings panel
+      takes, and it works only while the server is off. Uploading is how a world you
+      generated locally reaches the server, which is also the only way to choose a
+      <em>seed</em>: the dedicated server takes no seed argument.
+    </p>
 
-  <table class="settings" id="worlds-table">
-    <thead>
-      <tr>
-        <th scope="col">World</th>
-        <th scope="col">Layout</th>
-        <th scope="col">Size</th>
-        <th scope="col"><span class="visually-hidden">Action</span></th>
-      </tr>
-    </thead>
-    <tbody id="worlds-body"></tbody>
-  </table>
-  <p id="worlds-empty" class="muted small" hidden>
-    No worlds on the volume yet. The first <strong>Start</strong> generates one from
-    <code>WORLD_NAME</code> with a random seed &mdash; or upload one below first.
-  </p>
+    <table class="settings" id="worlds-table">
+      <thead>
+        <tr>
+          <th scope="col">World</th>
+          <th scope="col">Layout</th>
+          <th scope="col">Size</th>
+          <th scope="col"><span class="visually-hidden">Action</span></th>
+        </tr>
+      </thead>
+      <tbody id="worlds-body"></tbody>
+    </table>
+    <p id="worlds-empty" class="muted small" hidden>
+      No worlds on the volume yet. The first <strong>Start</strong> generates one from
+      <code>WORLD_NAME</code> with a random seed &mdash; or upload one below first.
+    </p>
 
-  <form id="world-upload-form" class="settings-form" autocomplete="off"
-        data-max-bytes="{{ max_upload_bytes }}" data-max-human="{{ max_upload_human }}"
-        data-max-files="{{ max_upload_files }}">
-    {# In the tab order, with a keydown handler in app.js: Enter or Space opens the
-       folder picker, which is what dropping a folder on it amounts to. #}
-    <div id="world-dropzone" class="dropzone" tabindex="0" role="group"
-         aria-labelledby="world-dropzone-label">
-      <p id="world-dropzone-label"><strong>Drop a world here to upload it</strong></p>
-      <p class="muted small">
-        A 1.0 world is its folder (<code>_main.N.db2</code>,
-        <code>_main.N.fwl2</code>, <code>_main.N.chunks</code>, the
-        <code>.chunk</code> files) or a <code>.zip</code> of that folder. A pre-1.0
-        world is a matching <code>.db</code> and <code>.fwl</code> pair &mdash; drop
-        both. Up to {{ max_upload_human }} and {{ max_upload_files }} files per upload
-        &mdash; a 1.0 world is one file per visited map chunk, so for a well-explored
-        one drop the <code>.zip</code>, which is a single file whatever the world's
-        size. Nothing is written unless the whole upload checks out, and an existing
-        world is never overwritten.
-      </p>
-      <div class="controls">
-        <button type="button" id="btn-pick-folder" class="ghost small">Choose a folder…</button>
-        <button type="button" id="btn-pick-files" class="ghost small">Choose files…</button>
+    <form id="world-upload-form" class="settings-form" autocomplete="off"
+          data-max-bytes="{{ max_upload_bytes }}" data-max-human="{{ max_upload_human }}"
+          data-max-files="{{ max_upload_files }}">
+      {# In the tab order, with a keydown handler in app.js: Enter or Space opens the
+         folder picker, which is what dropping a folder on it amounts to. #}
+      <div id="world-dropzone" class="dropzone" tabindex="0" role="group"
+           aria-labelledby="world-dropzone-label">
+        <p id="world-dropzone-label"><strong>Drop a world here to upload it</strong></p>
+        <p class="muted small">
+          A 1.0 world is its folder (<code>_main.N.db2</code>,
+          <code>_main.N.fwl2</code>, <code>_main.N.chunks</code>, the
+          <code>.chunk</code> files) or a <code>.zip</code> of that folder. A pre-1.0
+          world is a matching <code>.db</code> and <code>.fwl</code> pair &mdash; drop
+          both. Up to {{ max_upload_human }} and {{ max_upload_files }} files per upload
+          &mdash; a 1.0 world is one file per visited map chunk, so for a well-explored
+          one drop the <code>.zip</code>, which is a single file whatever the world's
+          size. Nothing is written unless the whole upload checks out, and an existing
+          world is never overwritten.
+        </p>
+        <div class="controls">
+          <button type="button" id="btn-pick-folder" class="ghost small">Choose a folder…</button>
+          <button type="button" id="btn-pick-files" class="ghost small">Choose files…</button>
+        </div>
+        {# Hidden, driven by the two buttons: a bare file input cannot say "or a whole
+           folder", and the drop zone is the primary route anyway. #}
+        <input type="file" id="world-folder-input" webkitdirectory directory multiple hidden>
+        <input type="file" id="world-file-input" multiple hidden>
       </div>
-      {# Hidden, driven by the two buttons: a bare file input cannot say "or a whole
-         folder", and the drop zone is the primary route anyway. #}
-      <input type="file" id="world-folder-input" webkitdirectory directory multiple hidden>
-      <input type="file" id="world-file-input" multiple hidden>
-    </div>
 
-    <p id="world-selection" class="muted small" role="status" aria-live="polite">
-      Nothing selected yet.
-    </p>
+      <p id="world-selection" class="muted small" role="status" aria-live="polite">
+        Nothing selected yet.
+      </p>
 
-    <label for="world-upload-name">Name on the server</label>
-    <input id="world-upload-name" name="name" type="text" spellcheck="false"
-           placeholder="taken from the folder or file name">
-    <p class="muted small">
-      Optional. A 1.0 world is named by its folder, a pre-1.0 one by its files; fill
-      this in to store it under a different name. One name, no slashes.
-    </p>
+      <label for="world-upload-name">Name on the server</label>
+      <input id="world-upload-name" name="name" type="text" spellcheck="false"
+             placeholder="taken from the folder or file name">
+      <p class="muted small">
+        Optional. A 1.0 world is named by its folder, a pre-1.0 one by its files; fill
+        this in to store it under a different name. One name, no slashes.
+      </p>
 
-    <p class="muted small" id="world-legacy-warning" hidden>{{ legacy_warning }}</p>
+      <p class="muted small" id="world-legacy-warning" hidden>{{ legacy_warning }}</p>
 
-    <progress id="world-progress" max="100" value="0"
-              aria-label="World upload progress" hidden></progress>
+      <progress id="world-progress" max="100" value="0"
+                aria-label="World upload progress" hidden></progress>
 
-    <div class="controls">
-      <button type="submit" id="btn-world-upload" class="primary" disabled>Upload</button>
-      {# Doubles as the abort while an upload is in flight -- see app.js. #}
-      <button type="button" id="btn-world-reset" class="ghost">Clear</button>
-    </div>
-  </form>
-</section>
-
-<section class="card console-card">
-  <h2>
-    Live console
-    <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
-    <button id="btn-clear" class="ghost small">Clear</button>
-  </h2>
-  <pre id="console" class="console" aria-live="polite"></pre>
-</section>
+      <div class="controls">
+        <button type="submit" id="btn-world-upload" class="primary" disabled>Upload</button>
+        {# Doubles as the abort while an upload is in flight -- see app.js. #}
+        <button type="button" id="btn-world-reset" class="ghost">Clear</button>
+      </div>
+    </form>
+  </section>
+</div>
 {% endblock %}
 
 {% block scripts %}

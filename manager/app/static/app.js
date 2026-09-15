@@ -13,7 +13,17 @@
   // The only phases in which settings may be edited: no container, or one that is down.
   var OFF_PHASES = { absent: 1, stopped: 1 };
 
+  // Which dashboard tab was last chosen. Per-browser, not per-session: it is a view
+  // preference, and the manager has no business storing it.
+  var TAB_STORAGE_KEY = "valheim-manager.tab";
+  // The tab holding the live log. Also the landing tab, but the two are separate
+  // facts: the console needs re-following on the way in whether or not it is where
+  // an unusable stored value would have landed.
+  var CONSOLE_TAB = "console";
+  var DEFAULT_TAB = CONSOLE_TAB;
+
   var el = {
+    tablist: document.querySelector("[role='tablist']"),
     badge: document.getElementById("status-badge"),
     link: document.getElementById("link-badge"),
     message: document.getElementById("status-message"),
@@ -98,11 +108,141 @@
   // The in-flight upload, so Clear can abort it.
   var uploadRequest = null;
 
+  // ------------------------------------------------------------------- tabs
+  //
+  // Panels are SHOWN AND HIDDEN, never built or torn down. The console is a <pre>
+  // holding up to MAX_CONSOLE_LINES appended lines, plus a scroll position and the
+  // follow checkbox, and the WebSocket pump has no notion of tabs -- re-rendering on a
+  // switch would throw all of that away. `hidden` on the panel leaves the buffer and
+  // the socket exactly as they are, and nothing here ever issues a request: lock
+  // state, error text and panel contents keep coming from the status push.
+  //
+  // The one thing hiding does NOT preserve is FOLLOWING. A display:none box reports
+  // every scroll metric as 0, so the follow-scroll in append() is a no-op for lines
+  // that arrive while another tab is up; selectTab re-establishes it on the way in.
+  // A parked view (follow off) is left exactly where it was.
+
+  // The tab buttons in document order, which is also the order the arrow keys walk.
+  var tabButtons = [];
+
+  function tabName(button) { return button.getAttribute("data-tab"); }
+
+  function tabPanel(button) {
+    return document.getElementById(button.getAttribute("aria-controls"));
+  }
+
+  // A tab is usable only if the panel it names is actually on the page: a stored name
+  // from an older build, or one another app on this origin wrote, must land on the
+  // Console rather than on three hidden panels and a blank screen.
+  function findTab(name) {
+    for (var i = 0; i < tabButtons.length; i++) {
+      if (tabName(tabButtons[i]) === name && tabPanel(tabButtons[i])) {
+        return tabButtons[i];
+      }
+    }
+    return null;
+  }
+
+  // Storage is unavailable in some privacy modes and throws on read as well as write,
+  // so neither may be allowed to take the dashboard down with it.
+  function storedTab() {
+    try { return window.localStorage.getItem(TAB_STORAGE_KEY); } catch (err) { return null; }
+  }
+
+  function storeTab(name) {
+    try { window.localStorage.setItem(TAB_STORAGE_KEY, name); } catch (err) { /* ignore */ }
+  }
+
+  function selectTab(name, focus) {
+    var chosen = findTab(name);
+    if (!chosen) { return false; }
+    for (var i = 0; i < tabButtons.length; i++) {
+      var button = tabButtons[i];
+      // findTab vouches for the CHOSEN tab's panel, not for the others'. One typo in
+      // an aria-controls would otherwise throw here -- and this runs from initTabs,
+      // where a throw takes the rest of the IIFE with it: no socket, no listeners,
+      // Start disabled forever. Skipping a broken tab degrades; throwing does not.
+      var panel = tabPanel(button);
+      if (!panel) { continue; }
+      var on = button === chosen;
+      button.setAttribute("aria-selected", on ? "true" : "false");
+      // One tab stop for the whole strip: the arrows move within it, Tab leaves it.
+      button.tabIndex = on ? 0 : -1;
+      panel.hidden = !on;
+    }
+    if (focus) { chosen.focus(); }
+    // A hidden console cannot scroll. Every scroll metric reads 0 on a display:none
+    // box, so append()'s follow-scroll is a no-op for every line that arrives while
+    // another tab is up, and the browser restores the OLD offset when the panel comes
+    // back. Following therefore has to be re-established on the way in -- otherwise
+    // the operator returns to a console whose checkbox says "follow" and whose view
+    // is parked where they left it, or at the very top after a reload onto another
+    // tab, and it stays there until the next line arrives. On a server that has gone
+    // quiet -- which is what "ready" means -- that is indefinitely.
+    if (tabName(chosen) === CONSOLE_TAB && el.follow.checked) { followTail(); }
+    storeTab(name);
+    return true;
+  }
+
+  // What a hidden panel cannot say for itself: that its controls are locked, or that it
+  // is holding an error. Inside the button, so it is part of the tab's accessible name
+  // ("Server settings, locked") rather than colour alone.
+  function markTab(name, note, kind) {
+    var button = findTab(name);
+    var mark = button ? button.querySelector("[data-tab-note]") : null;
+    if (!mark) { return; }
+    mark.textContent = note || "";
+    mark.className = "tab-note" + (note && kind ? " tab-note-" + kind : "");
+    mark.hidden = !note;
+  }
+
+  function onTabKeydown(event) {
+    var index = tabButtons.indexOf(event.target);
+    if (index === -1) { return; }
+    // Enter and Space activate whatever the arrows left the focus on. Handled here
+    // rather than left to the button's own click: preventDefault is needed anyway to
+    // stop Space scrolling the page, and that same preventDefault would suppress the
+    // click. Selecting a tab twice is harmless, so a click that does arrive is fine.
+    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+      event.preventDefault();
+      selectTab(tabName(tabButtons[index]), true);
+      return;
+    }
+    var next;
+    if (event.key === "ArrowLeft" || event.key === "Left") { next = index - 1; }
+    else if (event.key === "ArrowRight" || event.key === "Right") { next = index + 1; }
+    else if (event.key === "Home") { next = 0; }
+    else if (event.key === "End") { next = tabButtons.length - 1; }
+    else { return; }
+    event.preventDefault();
+    // A ring, which is what a tab list is: past the last tab is the first.
+    next = (next + tabButtons.length) % tabButtons.length;
+    selectTab(tabName(tabButtons[next]), true);
+  }
+
+  function initTabs() {
+    if (!el.tablist) { return; }
+    tabButtons = Array.prototype.slice.call(el.tablist.querySelectorAll("[role='tab']"));
+    if (!tabButtons.length) { return; }
+    el.tablist.addEventListener("click", function (event) {
+      var button = event.target.closest ? event.target.closest("[role='tab']") : null;
+      if (button) { selectTab(tabName(button), false); }
+    });
+    el.tablist.addEventListener("keydown", onTabKeydown);
+    // The stored choice, or the Console -- for a missing value and for an unusable one
+    // alike, since findTab refuses anything without a panel.
+    if (!selectTab(storedTab(), false)) { selectTab(DEFAULT_TAB, false); }
+  }
+
   // ---------------------------------------------------------------- console
 
   function atBottom() {
     return el.console.scrollHeight - el.console.scrollTop - el.console.clientHeight < 40;
   }
+
+  // Pin the view to the newest line. Only has any effect while the panel is
+  // visible, which is precisely why selectTab has to call it again on the way in.
+  function followTail() { el.console.scrollTop = el.console.scrollHeight; }
 
   function append(text, cls) {
     var stick = el.follow.checked || atBottom();
@@ -113,7 +253,7 @@
     while (el.console.childNodes.length > MAX_CONSOLE_LINES) {
       el.console.removeChild(el.console.firstChild);
     }
-    if (stick) { el.console.scrollTop = el.console.scrollHeight; }
+    if (stick) { followTail(); }
   }
 
   function system(text) { append("── " + text + " ──", "sys"); }
@@ -227,6 +367,8 @@
       !lastStatus || !haveValues || !!reason || pendingAction || editing;
     el.settingsLocked.textContent = reason || "";
     el.settingsLocked.hidden = !reason;
+    // The strip carries the lock too, so it is not news only to whoever opens the tab.
+    markTab("settings", reason ? "locked" : "", "locked");
     el.settingsSave.disabled = pendingAction;
     el.settingsCancel.disabled = pendingAction;
     el.settingsForm.hidden = !editing;
@@ -463,6 +605,19 @@
     var busy = pendingAction || uploading;
     el.worldsLocked.textContent = reason || "";
     el.worldsLocked.hidden = !reason;
+    // An error the panel is holding outranks the lock in the strip: the message itself
+    // stays in the panel, untouched by any tab switch, but a hidden panel cannot
+    // announce that it has one.
+    if (!el.worldsError.hidden) {
+      markTab("worlds", "error", "error");
+    } else if (uploading) {
+      // The progress bar and its abort are both inside this panel, so from any other
+      // tab an upload in flight would otherwise be entirely invisible -- and Start is
+      // still live, so the operator can press it and have the manager refuse them.
+      markTab("worlds", "uploading", "busy");
+    } else {
+      markTab("worlds", reason ? "locked" : "", "locked");
+    }
     var buttons = el.worldsBody.querySelectorAll("button[data-world]");
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].disabled = !!reason || busy;
@@ -1012,6 +1167,8 @@
       return payload;
     });
   }
+
+  initTabs();
 
   el.start.addEventListener("click", function () { system("start requested"); post("/api/start"); });
   el.stop.addEventListener("click", function () { system("stop requested"); post("/api/stop"); });

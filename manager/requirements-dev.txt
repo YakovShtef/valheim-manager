@@ -4,6 +4,14 @@
 #
 #   python -m pip install -r manager/requirements-dev.txt
 #   cd manager && python -m pytest
+#
+# The dashboard's tab strip is almost entirely browser-side, so part of the suite
+# executes app.js in jsdom rather than reading it as text. That needs node, once:
+#
+#   cd manager/app/tests/js && npm install
+#
+# Those tests fail rather than skip when node is missing: they are the only checks
+# standing behind the tab strip's behaviour, and a skipped test protects nothing.
 -r requirements.txt
 pytest==8.3.4
 httpx==0.28.1

@@ -5042,3 +5042,179 @@ def test_every_upload_refusal_is_logged_on_the_host(worlds, caplog):
     logged = [record.getMessage() for record in caplog.records if "refused" in record.getMessage()]
     assert len(logged) == 2, logged
     assert any("outside the world directory" in line for line in logged)
+
+
+# =====================================================================
+# The tabbed dashboard: Console, Server settings, Worlds.
+#
+# The panels themselves are unchanged -- every assertion above about the settings
+# help text, the modifier controls and the worlds table still holds. What is pinned
+# here is the wrapping: that all three panels are rendered on every load (hiding is
+# what keeps the console's buffer and the WebSocket alive, so nothing may be built
+# on demand), that the Console is the one showing, and that the tab wiring the
+# keyboard and the screen reader depend on is internally consistent.
+# =====================================================================
+
+PANEL_IDS = ["panel-console", "panel-settings", "panel-worlds"]
+
+TAB_BUTTON_RE = re.compile(r"<button[^>]*\brole=\"tab\"[^>]*>", re.S)
+
+
+def _tab_attributes(page: str) -> list[dict[str, str]]:
+    """Every ``role="tab"`` button's attributes, in document order."""
+    tabs = []
+    for match in TAB_BUTTON_RE.finditer(page):
+        tabs.append(dict(re.findall(r"([a-z-]+)=\"([^\"]*)\"", match.group(0))))
+    return tabs
+
+
+def _panels(page: str) -> dict[str, str]:
+    """The markup of each tab panel, sliced at the next panel's opening tag."""
+    marks = []
+    for panel_id in PANEL_IDS:
+        needle = f'id="{panel_id}"'
+        assert needle in page, f"{panel_id} is not rendered"
+        marks.append(page.index(needle))
+    assert marks == sorted(marks), "the panels are not in Console/settings/worlds order"
+    marks.append(len(page))
+    return {PANEL_IDS[i]: page[marks[i] : marks[i + 1]] for i in range(len(PANEL_IDS))}
+
+
+def test_the_dashboard_lands_on_the_console_tab(stack):
+    """First load, no stored choice: the markup itself has to open on the Console, or
+    the landing tab would depend on a script that has not run yet."""
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    tabs = _tab_attributes(page)
+    assert [tab["data-tab"] for tab in tabs] == ["console", "settings", "worlds"]
+
+    selected = [tab for tab in tabs if tab["aria-selected"] == "true"]
+    assert len(selected) == 1, "exactly one tab may be selected"
+    assert selected[0]["data-tab"] == "console"
+    assert selected[0]["aria-controls"] == "panel-console"
+
+    # ...and the Console panel is the only one showing.
+    panels = _panels(page)
+    assert "hidden" not in panels["panel-console"].split(">")[0]
+    for panel_id in ("panel-settings", "panel-worlds"):
+        assert "hidden" in panels[panel_id].split(">")[0], panel_id
+
+
+def test_the_tab_wiring_is_internally_consistent(stack):
+    """`aria-controls` pointing at nothing is a tab that opens a blank page, and two
+    tab stops in the strip is a keyboard trap for the arrow keys."""
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    assert 'role="tablist"' in page
+    tabs = _tab_attributes(page)
+    assert len(tabs) == len(PANEL_IDS)
+
+    for tab in tabs:
+        assert tab["aria-controls"] in PANEL_IDS
+        assert f'id="{tab["aria-controls"]}"' in page
+        # THIS element's opening tag, not "somewhere later in the document" -- sliced
+        # to EOF, any other tabpanel on the page would have satisfied it.
+        opening = page[page.index(f'id="{tab["aria-controls"]}"') :]
+        opening = opening[: opening.index(">")]
+        assert 'role="tabpanel"' in opening, tab["aria-controls"]
+        assert 'tabindex="0"' in opening, tab["aria-controls"]
+        # One tab stop for the whole strip: only the selected tab is in the tab order.
+        assert tab["tabindex"] == ("0" if tab["aria-selected"] == "true" else "-1")
+        # Each panel names its tab back, so the panel has an accessible name.
+        assert f'aria-labelledby="{tab["id"]}"' in page
+
+    # Every panel is pointed at by exactly one tab.
+    assert sorted(tab["aria-controls"] for tab in tabs) == sorted(PANEL_IDS)
+
+
+def test_all_three_panels_are_rendered_on_every_load(stack):
+    """Hidden, never absent -- the precondition for the console surviving a switch.
+
+    That it actually survives is not checked here and cannot be: this reads markup.
+    ``test_tabs_runtime.py`` executes the page and checks the survival itself.
+    """
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    panels = _panels(page)
+
+    # The Console tab: the status badge is in the strip (visible from every tab), and
+    # the controls and the log live in the panel.
+    assert page.index('id="status-badge"') < page.index('id="panel-console"')
+    for needle in ('id="btn-start"', 'id="btn-stop"', 'id="btn-restart"', 'id="console"'):
+        assert needle in panels["panel-console"], needle
+
+    # The settings panel, with the help text and the editor the panel tests assert.
+    for needle in ('id="settings-table"', 'id="settings-form"', 'id="btn-settings-edit"'):
+        assert needle in panels["panel-settings"], needle
+    assert "builds a new one with the new" in " ".join(panels["panel-settings"].split())
+
+    # The worlds panel, with its table and its upload form.
+    for needle in ('id="worlds-table"', 'id="world-upload-form"', 'id="world-dropzone"'):
+        assert needle in panels["panel-worlds"], needle
+
+    # And nothing leaked across: a control in two panels is a duplicate id.
+    assert 'id="btn-start"' not in panels["panel-settings"] + panels["panel-worlds"]
+    assert 'id="settings-form"' not in panels["panel-console"] + panels["panel-worlds"]
+
+
+def test_every_panel_is_pinned_hidden_by_its_own_rule(stack):
+    """An author `display` beats the UA stylesheet's `[hidden] { display: none }`, and
+    that exact bug shipped here once already -- with three panels it would stack the
+    whole dashboard down the page instead of hiding one editor."""
+    css = (Path(__file__).resolve().parents[1] / "static" / "style.css").read_text(
+        encoding="utf-8"
+    )
+    collapsed = " ".join(css.split())
+    for panel_id in PANEL_IDS:
+        assert f"#{panel_id}[hidden] {{ display: none; }}" in collapsed, panel_id
+
+    # ...and nothing later in the file undoes them. The guards being PRESENT says
+    # nothing about their winning: a later `#panel-settings { display: block }`, or
+    # any `display` marked !important, walks straight past them and stacks the whole
+    # dashboard down the page again. Positions come from the match, not from a search
+    # for the selector text -- every panel's name also occurs in its own guard.
+    guards_end = max(collapsed.index(f"#{pid}[hidden]") for pid in PANEL_IDS)
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", collapsed):
+        selector, body = match.group(1).strip(), match.group(2)
+        if "display" not in body:
+            continue
+        assert "!important" not in body, f"a !important display outranks the guards: {selector}"
+        if match.start() <= guards_end:
+            continue
+        touches_panel = "tabpanel" in selector or any(pid in selector for pid in PANEL_IDS)
+        assert not touches_panel, f"{selector} sets display on a panel after its guard"
+
+
+def test_tab_switching_never_calls_the_manager(stack):
+    """Lock state, error text and panel contents all come from the existing status
+    push; a tab switch that fetched anything would be a second source of truth.
+
+    A cheap tripwire over the source, not a behavioural check -- ``test_tabs_runtime``
+    records the real requests and the real socket. Two things this used to get wrong,
+    and both mattered: it stopped scanning at ``initTabs``, so the click handler and
+    the restore path -- the two routes a switch actually takes -- were outside the
+    window entirely; and it named ``fetch(``/``XMLHttpRequest`` while this file's own
+    way of reaching the manager is ``post(`` and ``refreshWorlds()``.
+    """
+    js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    # The whole tabs section, banner to banner: selection, the keyboard, and init.
+    start = js.index("------- tabs")
+    body = js[start : js.index("---------- console", start)]
+    assert "function initTabs(" in body, "the scan window no longer covers init"
+    assert "function selectTab(" in body, "the scan window no longer covers selection"
+
+    # The comments here talk about the socket and about not fetching; only code counts.
+    code = re.sub("//.*", "", body)
+    for forbidden in ("fetch(", "XMLHttpRequest", "post(", "refreshWorlds(", "socket",
+                      "innerHTML", "replaceChildren"):
+        assert forbidden not in code, forbidden
+    # Shown and hidden, never rebuilt.
+    assert ".hidden = !on" in code

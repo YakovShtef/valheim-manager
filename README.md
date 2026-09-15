@@ -188,6 +188,28 @@ account comes with a newly generated session secret.
 
 ## What the UI shows
 
+The dashboard is three tabs, and the server's phase badge sits in the tab strip so it
+is on screen whichever one you are on:
+
+- **Console** — the landing tab: the status card, **Start** / **Stop** / **Restart**,
+  and the live log. It keeps streaming while another tab is showing; panels are
+  hidden, never rebuilt, so coming back finds the scrollback and the *follow*
+  checkbox as you left them. With *follow* on, returning to the Console jumps to the
+  newest line — a hidden panel cannot scroll, so following is re-established on the
+  way in rather than leaving you parked above the tail. With *follow* off, the
+  position you were reading at is left alone.
+- **Server settings** — the values in `settings/valheim.env`, and the editor.
+- **Worlds** — the worlds on the volume, **Load**, and the upload drop zone.
+
+Settings and Worlds stay open while the server runs so their current values can be
+read; their editing controls are disabled with the reason spelled out rather than
+hidden, and the tab is marked *locked* in the strip. A world upload in flight marks
+its tab *uploading*, and a worlds error marks it *error*, so neither is invisible
+from another tab. The selected tab is remembered per browser and comes back on
+reload — anything unrecognised lands on Console. Left and Right (and Home / End)
+move along the strip, Enter or Space activates, and each panel can take focus itself
+so the keyboard reaches a panel whose controls are all locked.
+
 *Running* and *ready* are different facts and the UI never conflates them:
 
 - **running (not yet ready)** — the container is up; the world is still loading.
@@ -574,6 +596,14 @@ docker compose logs manager              # the first-run setup URL
 # context, so it does not run inside the manager container -- and pytest is
 # deliberately not installed in the runtime image.
 python -m pip install -r manager/requirements-dev.txt
+
+# Part of the suite runs the dashboard's app.js in jsdom rather than reading it as
+# text -- which panel is showing, whether the console kept its buffer, whether a
+# lock reached the tab strip are all runtime facts a source-text check cannot see.
+# Once, and node has to be on PATH. These tests FAIL rather than skip without it:
+# they are the only checks behind the tab strip's behaviour.
+cd manager/app/tests/js && npm install && cd ../../../..
+
 cd manager && python -m pytest
 ```
 

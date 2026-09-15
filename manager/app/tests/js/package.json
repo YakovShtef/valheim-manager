@@ -1,0 +1,13 @@
+{
+  "name": "valheim-manager-dashboard-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "jsdom harness for the dashboard's tab strip. Test-only: nothing here ships in the image, and the manager itself has no build step or JS dependencies.",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"run it through pytest: cd manager && python -m pytest app/tests/test_tabs_runtime.py\" && exit 1"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  }
+}

@@ -15,3 +15,8 @@ valheim.env
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# the jsdom install behind the dashboard's runtime tests (manager/app/tests/js).
+# package-lock.json IS committed -- the tests should run against the same versions
+# everywhere; only the installed tree is local.
+node_modules/
