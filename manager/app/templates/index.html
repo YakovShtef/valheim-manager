@@ -336,6 +336,94 @@
     </form>
   </section>
 
+  {# Backups. A card of its own rather than more rows in the worlds table: the timer's
+     settings belong with the archives it writes, and the list mixes three different
+     writers (the Backup button, the timer, and the game server's own hourly ones)
+     that the table has to tell apart. #}
+  <section class="card backups-card">
+    <h2>
+      Backups
+      <button id="btn-backups-refresh" class="ghost small">Refresh</button>
+    </h2>
+
+    <p id="backups-error" class="banner banner-error" role="alert" hidden></p>
+
+    <p class="muted">
+      A backup is a <code>.zip</code> of one world, and taking one never touches the
+      world itself &mdash; you can do it while people are playing. Restoring writes a
+      world back out, so the server has to be off for that.
+    </p>
+
+    <form id="backup-schedule-form" class="settings-form backup-schedule" autocomplete="off">
+      <label class="check">
+        <input type="checkbox" id="backup-enabled" checked>
+        Back up the loaded world automatically
+      </label>
+      <p class="muted small">
+        The game server keeps its own hourly backups and deletes them after a few
+        days. These are the dashboard's: they are kept for as long as you say, and
+        nothing else ever removes them.
+      </p>
+
+      <fieldset class="modifiers backup-interval" id="backup-interval-fields">
+        <legend>How often</legend>
+        <label class="radio">
+          <input type="radio" name="backup-interval-mode" id="backup-every-day"
+                 value="default" checked>
+          Every {{ backup_limits.default_interval_hours }} hours
+        </label>
+        <label class="radio">
+          <input type="radio" name="backup-interval-mode" id="backup-every-custom"
+                 value="custom">
+          Every
+          <input type="number" id="backup-interval-hours"
+                 min="{{ backup_limits.min_interval_hours }}"
+                 max="{{ backup_limits.max_interval_hours }}"
+                 value="{{ backup_limits.default_interval_hours }}"
+                 aria-label="Hours between backups">
+          hours
+        </label>
+        <p class="muted small">
+          Anything from {{ backup_limits.min_interval_hours }} hour to
+          {{ backup_limits.max_interval_hours }} hours.
+        </p>
+
+        <label for="backup-keep">Backups to keep, per world</label>
+        <input type="number" id="backup-keep"
+               min="{{ backup_limits.min_keep }}" max="{{ backup_limits.max_keep }}"
+               value="{{ backup_limits.default_keep }}">
+        <p class="muted small">
+          Once there are more than this, the oldest <em>automatic</em> backup of that
+          world is deleted to make room. A backup you took yourself with
+          <strong>Back up</strong> is never removed on a timer.
+        </p>
+      </fieldset>
+
+      <p id="backup-schedule-note" class="muted small" role="status" aria-live="polite"></p>
+
+      <div class="controls">
+        <button type="submit" id="btn-backup-schedule-save" class="primary">Save</button>
+      </div>
+    </form>
+
+    <table class="settings" id="backups-table">
+      <thead>
+        <tr>
+          <th scope="col">World</th>
+          <th scope="col">Taken</th>
+          <th scope="col">By</th>
+          <th scope="col">Size</th>
+          <th scope="col"><span class="visually-hidden">Action</span></th>
+        </tr>
+      </thead>
+      <tbody id="backups-body"></tbody>
+    </table>
+    <p id="backups-empty" class="muted small" hidden>
+      No backups yet. Press <strong>Back up</strong> on a world above, or leave
+      automatic backups on and the first one arrives shortly.
+    </p>
+  </section>
+
   {# Deleting is the one action here that destroys data, so it asks first -- and the
      question names the world and what it is about to remove rather than asking
      "are you sure?" about nothing in particular. #}
@@ -356,6 +444,46 @@
     <div class="controls">
       <button type="button" id="btn-delete-cancel" class="ghost" autofocus>Cancel</button>
       <button type="button" id="btn-delete-confirm" class="danger">Delete forever</button>
+    </div>
+  </dialog>
+
+  {# Restoring is the one action here that can destroy a world, so it asks first and
+     the question names what is about to happen. The default is the harmless one:
+     restoring under a new name leaves everything already on the volume where it is. #}
+  <dialog id="restore-dialog" class="confirm" aria-labelledby="restore-dialog-title">
+    <h2 id="restore-dialog-title">Restore this backup?</h2>
+    <p class="confirm-subject">
+      <strong id="restore-dialog-name"></strong>
+      <span id="restore-dialog-detail" class="muted small"></span>
+    </p>
+    <p class="banner banner-error">
+      <strong>Everything since this backup was taken will be gone.</strong> A world is
+      whatever was last saved &mdash; buildings, chests, the map you have explored and
+      where your characters left their gear. Restoring winds all of it back to the
+      moment the backup was made, and the dashboard cannot undo it.
+    </p>
+    <div class="settings-form restore-choice">
+      <label class="radio">
+        <input type="radio" name="restore-mode" id="restore-as-new" value="new" checked>
+        Restore it as a new world
+      </label>
+      <input type="text" id="restore-new-name" spellcheck="false"
+             aria-label="Name for the restored world">
+      <p class="muted small">
+        Nothing you already have is touched. Press <strong>Load</strong> on it in the
+        list above afterwards to play it.
+      </p>
+      <label class="radio">
+        <input type="radio" name="restore-mode" id="restore-overwrite" value="overwrite">
+        Replace <strong id="restore-overwrite-world">the world it came from</strong>
+      </label>
+      <p class="muted small">
+        That world is deleted and this backup is written in its place.
+      </p>
+    </div>
+    <div class="controls">
+      <button type="button" id="btn-restore-cancel" class="ghost" autofocus>Cancel</button>
+      <button type="button" id="btn-restore-confirm" class="primary">Restore</button>
     </div>
   </dialog>
 </div>

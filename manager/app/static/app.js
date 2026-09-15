@@ -65,6 +65,30 @@
     modName: document.getElementById("mod-upload-name"),
     modUpload: document.getElementById("btn-mod-upload"),
     modReset: document.getElementById("btn-mod-reset"),
+    backupsRefresh: document.getElementById("btn-backups-refresh"),
+    backupsError: document.getElementById("backups-error"),
+    backupsTable: document.getElementById("backups-table"),
+    backupsBody: document.getElementById("backups-body"),
+    backupsEmpty: document.getElementById("backups-empty"),
+    backupScheduleForm: document.getElementById("backup-schedule-form"),
+    backupEnabled: document.getElementById("backup-enabled"),
+    backupIntervalFields: document.getElementById("backup-interval-fields"),
+    backupEveryDay: document.getElementById("backup-every-day"),
+    backupEveryCustom: document.getElementById("backup-every-custom"),
+    backupIntervalHours: document.getElementById("backup-interval-hours"),
+    backupKeep: document.getElementById("backup-keep"),
+    backupScheduleNote: document.getElementById("backup-schedule-note"),
+    backupScheduleSave: document.getElementById("btn-backup-schedule-save"),
+    restoreDialog: document.getElementById("restore-dialog"),
+    restoreName: document.getElementById("restore-dialog-name"),
+    restoreDetail: document.getElementById("restore-dialog-detail"),
+    restoreChoice: document.querySelector(".restore-choice"),
+    restoreAsNew: document.getElementById("restore-as-new"),
+    restoreNewName: document.getElementById("restore-new-name"),
+    restoreOverwrite: document.getElementById("restore-overwrite"),
+    restoreOverwriteWorld: document.getElementById("restore-overwrite-world"),
+    restoreConfirm: document.getElementById("btn-restore-confirm"),
+    restoreCancel: document.getElementById("btn-restore-cancel"),
     worldNewForm: document.getElementById("world-new-form"),
     worldNewName: document.getElementById("world-new-name"),
     worldNewButton: document.getElementById("btn-world-new"),
@@ -202,6 +226,10 @@
     // Mods are per world, so the list is only meaningful next to the current set of
     // worlds -- which a switch or a delete on another tab may just have changed.
     if (tabName(chosen) === "mods") { fillModWorlds(); refreshMods(el.modsWorld.value); }
+    // The backups list is changed by things that happen outside this panel -- the
+    // timer, and Back up on a world row -- so it is re-read on the way in rather
+    // than left as it was whenever the tab was last open.
+    if (tabName(chosen) === "worlds" && backupsLoaded) { refreshBackups(); }
     // A hidden console cannot scroll. Every scroll metric reads 0 on a display:none
     // box, so append()'s follow-scroll is a no-op for every line that arrives while
     // another tab is up, and the browser restores the OLD offset when the panel comes
@@ -393,6 +421,337 @@
     // background tab throttles this, and the next paint recomputes from Date.now(),
     // so coming back to the tab corrects itself with no extra bookkeeping.
     window.setInterval(paintClock, 250);
+  }
+
+
+  // ---------------------------------------------------------------- backups
+  //
+  // Three writers put archives in one folder and the table has to tell them apart:
+  // the Backup button (MANUAL-), this timer (SCHEDULED-), and the game server's own
+  // hourly ones. Only the first two are the manager's to delete, which the server
+  // decides -- the row just draws what it was told.
+
+  var BACKUP_KINDS = {
+    manual: "You",
+    scheduled: "Automatic",
+    game: "Game server"
+  };
+
+  // The pending restore, between opening the dialog and confirming it.
+  var restoring = null;
+  var backupsLoaded = false;
+
+  function backupLimit(name, fallback) {
+    var limits = lastBackupLimits || {};
+    var value = Number(limits[name]);
+    return isFinite(value) && value > 0 ? value : fallback;
+  }
+  var lastBackupLimits = null;
+
+  function showBackupsError(text) {
+    if (!el.backupsError) { return; }
+    el.backupsError.textContent = text;
+    el.backupsError.hidden = !text;
+  }
+
+  function formatTaken(epoch) {
+    var value = Number(epoch);
+    if (!isFinite(value) || value <= 0) { return "—"; }
+    // The server's clock and offset, so a backup's time reads the same as the header
+    // clock rather than being silently converted to the viewer's zone.
+    var at = new Date((value + clock.offsetMinutes * 60) * 1000);
+    return DAY_NAMES[at.getUTCDay()] + " " + at.getUTCDate() + " " +
+      MONTH_NAMES[at.getUTCMonth()] + " " + pad2(at.getUTCHours()) + ":" +
+      pad2(at.getUTCMinutes());
+  }
+
+  function renderBackups(payload) {
+    if (!el.backupsBody) { return; }
+    backupsLoaded = true;
+    if (payload.limits) { lastBackupLimits = payload.limits; }
+    showBackupsError(payload.error || "");
+    if (payload.message) { system(payload.message); }
+    if (payload.warning) { system(payload.warning); }
+    if (payload.schedule) { renderSchedule(payload.schedule, payload.loaded_world || ""); }
+
+    var rows = payload.backups || [];
+    lastBackupRows = rows;
+    el.backupsBody.textContent = "";
+    el.backupsTable.hidden = rows.length === 0;
+    el.backupsEmpty.hidden = rows.length !== 0;
+
+    for (var i = 0; i < rows.length; i++) {
+      el.backupsBody.appendChild(backupRow(rows[i]));
+    }
+  }
+
+  function backupRow(backup) {
+    var row = document.createElement("tr");
+
+    var world = document.createElement("td");
+    world.className = "backup-world";
+    // The game's own archives are named by timestamp, not by world, so the server
+    // sends no world for them rather than inventing one.
+    world.textContent = backup.world || "—";
+    row.appendChild(world);
+
+    var taken = document.createElement("td");
+    taken.className = "backup-taken";
+    taken.textContent = formatTaken(backup.taken_at);
+    row.appendChild(taken);
+
+    var by = document.createElement("td");
+    var tag = document.createElement("span");
+    tag.className = "tag" + (backup.kind === "manual" ? " tag-active" : "");
+    tag.textContent = BACKUP_KINDS[backup.kind] || backup.kind;
+    by.appendChild(tag);
+    row.appendChild(by);
+
+    var size = document.createElement("td");
+    size.textContent = backup.size || "";
+    row.appendChild(size);
+
+    var action = document.createElement("td");
+    action.className = "backup-action";
+    if (backup.restorable) {
+      var restore = document.createElement("button");
+      restore.className = "ghost";
+      restore.textContent = "Restore";
+      restore.setAttribute("data-backup-restore", backup.name);
+      action.appendChild(restore);
+    }
+    if (backup.deletable) {
+      var remove = document.createElement("button");
+      remove.className = "ghost danger-quiet";
+      remove.textContent = "Delete";
+      remove.setAttribute("data-backup-delete", backup.name);
+      action.appendChild(remove);
+    }
+    // No note where Delete would be: the "Game server" tag in the By column already
+    // says whose it is, and a second explanation beside the button read as a caption
+    // for the Restore next to it.
+    row.appendChild(action);
+    return row;
+  }
+
+  function renderSchedule(schedule, loadedWorld) {
+    if (!el.backupEnabled) { return; }
+    el.backupEnabled.checked = !!schedule.enabled;
+    var hours = Number(schedule.interval_hours) || backupLimit("default_interval_hours", 24);
+    var isDefault = hours === backupLimit("default_interval_hours", 24);
+    el.backupEveryDay.checked = isDefault;
+    el.backupEveryCustom.checked = !isDefault;
+    el.backupIntervalHours.value = hours;
+    el.backupKeep.value = Number(schedule.keep_per_world) || backupLimit("default_keep", 7);
+    syncScheduleControls();
+
+    var note = "";
+    if (!schedule.enabled) {
+      note = "Automatic backups are off. Backups already saved are kept.";
+    } else if (schedule.last_error) {
+      // The timer ran and had nothing to do, or could not do it. Said plainly so a
+      // timer that looks stuck is explained rather than mysterious.
+      note = schedule.last_error;
+    } else if (schedule.last_run_at) {
+      note = "Last automatic backup: " + formatTaken(schedule.last_run_at) +
+        (loadedWorld ? " (" + loadedWorld + ")" : "");
+    } else {
+      note = "The first automatic backup will be taken shortly.";
+    }
+    el.backupScheduleNote.textContent = note;
+  }
+
+  function syncScheduleControls() {
+    if (!el.backupEnabled) { return; }
+    var on = el.backupEnabled.checked;
+    el.backupScheduleForm.classList.toggle("is-off", !on);
+    el.backupIntervalFields.classList.toggle("is-default", el.backupEveryDay.checked);
+    // Disabled rather than hidden: the value still says what would happen, and a
+    // hidden control that reappears where you were not looking is worse.
+    el.backupEveryDay.disabled = !on;
+    el.backupEveryCustom.disabled = !on;
+    el.backupIntervalHours.disabled = !on;
+    el.backupKeep.disabled = !on;
+  }
+
+  function refreshBackups() {
+    fetch("/api/backups", { credentials: "same-origin" })
+      .then(function (response) {
+        if (response.status === 401) { window.location.href = "/login"; return null; }
+        return response.json();
+      })
+      .then(function (payload) { if (payload) { renderBackups(payload); } })
+      .catch(function (err) {
+        showBackupsError("Could not read the backups: " + err);
+      });
+  }
+
+  function backupAction(url, body) {
+    setBackupsBusy(true);
+    fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    })
+      .then(function (response) {
+        if (response.status === 401) { window.location.href = "/login"; return null; }
+        return response.json();
+      })
+      .then(function (payload) {
+        setBackupsBusy(false);
+        if (payload) { renderBackups(payload); }
+      })
+      .catch(function (err) {
+        setBackupsBusy(false);
+        showBackupsError("Lost contact with the manager: " + err);
+      });
+  }
+
+  function setBackupsBusy(busy) {
+    if (!el.backupsBody) { return; }
+    var buttons = el.backupsBody.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = busy; }
+    if (el.backupsRefresh) { el.backupsRefresh.disabled = busy; }
+    if (el.backupScheduleSave) { el.backupScheduleSave.disabled = busy; }
+  }
+
+  // ------------------------------------------------------------ the restore ask
+
+  function openRestore(name, row) {
+    restoring = { name: name, world: row ? row.world : "" };
+    el.restoreName.textContent = name;
+    el.restoreDetail.textContent = row
+      ? (row.world ? "Taken from " + row.world + " on " : "Taken ") + formatTaken(row.taken_at) +
+        (row.size ? " · " + row.size : "")
+      : "";
+    el.restoreOverwriteWorld.textContent = restoring.world || "the world it came from";
+    // Overwriting is only offered when we know which world to overwrite.
+    el.restoreOverwrite.disabled = !restoring.world;
+    el.restoreAsNew.checked = true;
+    el.restoreNewName.value = suggestRestoreName(restoring.world);
+    syncRestoreChoice();
+    if (typeof el.restoreDialog.showModal === "function") {
+      el.restoreDialog.showModal();
+    } else {
+      el.restoreDialog.setAttribute("open", "open");
+    }
+  }
+
+  function suggestRestoreName(world) {
+    if (!world) { return ""; }
+    // A name that will not collide, so the safe option works on the first press.
+    var base = world + " restored";
+    // Read off the rendered worlds table rather than a data attribute: the Load
+    // button carries `data-world`, but the row for the world already loaded has no
+    // Load button, so keying on that would miss exactly the name most likely to clash.
+    var taken = {};
+    var cells = el.worldsBody ? el.worldsBody.querySelectorAll("td.world-name") : [];
+    for (var i = 0; i < cells.length; i++) {
+      taken[(cells[i].textContent || "").trim().toLowerCase()] = 1;
+    }
+    if (!taken[base.toLowerCase()]) { return base; }
+    for (var n = 2; n < 100; n++) {
+      if (!taken[(base + " " + n).toLowerCase()]) { return base + " " + n; }
+    }
+    return base;
+  }
+
+  function syncRestoreChoice() {
+    var overwrite = el.restoreOverwrite.checked;
+    el.restoreChoice.classList.toggle("is-overwrite", overwrite);
+    el.restoreNewName.disabled = overwrite;
+    el.restoreConfirm.classList.toggle("is-destructive", overwrite);
+    el.restoreConfirm.textContent = overwrite ? "Replace the world" : "Restore";
+  }
+
+  function closeRestore() {
+    restoring = null;
+    if (typeof el.restoreDialog.close === "function") {
+      el.restoreDialog.close();
+    } else {
+      el.restoreDialog.removeAttribute("open");
+    }
+  }
+
+  function initBackups() {
+    if (!el.backupsBody) { return; }
+    lastBackupLimits = {
+      min_interval_hours: Number(el.backupIntervalHours.getAttribute("min")) || 1,
+      max_interval_hours: Number(el.backupIntervalHours.getAttribute("max")) || 720,
+      default_interval_hours: Number(el.backupIntervalHours.getAttribute("value")) || 24,
+      min_keep: Number(el.backupKeep.getAttribute("min")) || 1,
+      max_keep: Number(el.backupKeep.getAttribute("max")) || 200,
+      default_keep: Number(el.backupKeep.getAttribute("value")) || 7
+    };
+
+    el.backupsRefresh.addEventListener("click", refreshBackups);
+    el.backupEnabled.addEventListener("change", syncScheduleControls);
+    el.backupEveryDay.addEventListener("change", syncScheduleControls);
+    el.backupEveryCustom.addEventListener("change", syncScheduleControls);
+    // Typing in the field is how most people will pick "custom", so treat it as that
+    // rather than making them find the radio first.
+    el.backupIntervalHours.addEventListener("focus", function () {
+      if (!el.backupIntervalHours.disabled) {
+        el.backupEveryCustom.checked = true;
+        syncScheduleControls();
+      }
+    });
+
+    el.backupScheduleForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var hours = el.backupEveryDay.checked
+        ? backupLimit("default_interval_hours", 24)
+        : Number(el.backupIntervalHours.value);
+      backupAction("/api/backups/schedule", {
+        enabled: el.backupEnabled.checked,
+        interval_hours: hours,
+        keep_per_world: Number(el.backupKeep.value)
+      });
+    });
+
+    el.backupsBody.addEventListener("click", function (event) {
+      var target = event.target.closest ? event.target : null;
+      if (!target) { return; }
+      var restore = target.closest("button[data-backup-restore]");
+      if (restore && !restore.disabled) {
+        var name = restore.getAttribute("data-backup-restore");
+        openRestore(name, findBackupRow(name));
+        return;
+      }
+      var remove = target.closest("button[data-backup-delete]");
+      if (remove && !remove.disabled) {
+        backupAction("/api/backups/delete", { name: remove.getAttribute("data-backup-delete") });
+      }
+    });
+
+    el.restoreAsNew.addEventListener("change", syncRestoreChoice);
+    el.restoreOverwrite.addEventListener("change", syncRestoreChoice);
+    el.restoreCancel.addEventListener("click", closeRestore);
+    el.restoreDialog.addEventListener("cancel", function (event) {
+      event.preventDefault();
+      closeRestore();
+    });
+    el.restoreConfirm.addEventListener("click", function () {
+      if (!restoring) { return; }
+      var overwrite = el.restoreOverwrite.checked;
+      var body = { name: restoring.name, overwrite: overwrite };
+      if (!overwrite) { body.target = el.restoreNewName.value.trim(); }
+      closeRestore();
+      backupAction("/api/backups/restore", body);
+    });
+
+    refreshBackups();
+  }
+
+  // The rows the table last drew, so the dialog can name what it is about to do
+  // without asking the server again.
+  var lastBackupRows = [];
+  function findBackupRow(name) {
+    for (var i = 0; i < lastBackupRows.length; i++) {
+      if (lastBackupRows[i].name === name) { return lastBackupRows[i]; }
+    }
+    return null;
   }
 
   // ----------------------------------------------------------------- status
@@ -1196,6 +1555,10 @@
     system("backing up " + name);
     post("/api/worlds/backup", { name: name }).then(function (payload) {
       if (payload && payload.backed_up && payload.message) { system(payload.message); }
+      // The worlds route answers with the worlds panel, which knows nothing about the
+      // backups table directly below it -- so that table is re-read here instead of
+      // sitting one archive out of date until someone presses Refresh.
+      refreshBackups();
     });
   }
 
@@ -1695,6 +2058,7 @@
   initTabs();
   initHints();
   initMods();
+  initBackups();
   startClock();
 
   el.start.addEventListener("click", function () { system("start requested"); post("/api/start"); });

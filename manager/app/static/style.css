@@ -513,6 +513,42 @@ dialog.confirm .controls { margin-top: var(--s5); justify-content: flex-end; }
 .mods-card .settings td.world-action button { padding: 4px var(--s3); font-size: 12.5px; }
 .mods-card .settings td.world-action button + button { margin-left: var(--s1); }
 
+/* ------------------------------------------------------------- the backups */
+
+.backups-card .settings td.backup-world { font-weight: 600; }
+.backups-card .settings td.backup-action { text-align: right; white-space: nowrap; }
+.backups-card .settings td.backup-action button { padding: 4px var(--s3); font-size: 12.5px; }
+.backups-card .settings td.backup-action button + button { margin-left: var(--s1); }
+/* The timestamp is the column people scan down, so it gets figures that line up. */
+.backups-card .settings td.backup-taken { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.backup-schedule { max-width: 620px; }
+.backup-schedule .radio {
+  display: flex; align-items: center; gap: var(--s2);
+  font-size: 13.5px; color: var(--ink); margin-top: var(--s2);
+}
+/* The custom-interval field sits inside its own radio's label, so it must not
+   stretch the way a standalone field in the grid does. */
+.backup-schedule .radio input[type="number"] { width: 5.5em; }
+/* Greyed out while "every N hours" is not the option chosen -- still reachable, so
+   clicking the field is a way to choose it rather than a dead end. */
+.backup-interval.is-default #backup-interval-hours { opacity: .5; }
+/* The whole block goes quiet when automatic backups are switched off: the settings
+   still say what they would do, which is why they are shown rather than hidden. */
+.backup-schedule.is-off .backup-interval { opacity: .55; }
+
+.restore-choice { margin: var(--s4) 0 0; }
+.restore-choice .radio {
+  display: flex; align-items: center; gap: var(--s2);
+  font-size: 13.5px; color: var(--ink); margin-top: var(--s3);
+}
+.restore-choice input[type="text"] { margin-top: var(--s1); }
+/* The destructive option should not look like the safe one. */
+.restore-choice.is-overwrite { --accent: var(--danger); }
+#restore-dialog .controls button.primary.is-destructive {
+  background: var(--danger); color: #1a0d0a;
+}
+
 /* --------------------------------------------------------------- the console */
 
 .console-card h2 { margin-bottom: var(--s3); }

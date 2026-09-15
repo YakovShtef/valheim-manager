@@ -66,6 +66,15 @@ DEFAULT_BACKUPS_DIR = "/config/backups"
 # purpose should not evaporate on a timer.
 BACKUP_PREFIX = "MANUAL-"
 
+# What the backup timer writes. A separate prefix from MANUAL- for two reasons: the
+# panel can say which backups it made itself, and retention can delete only its own.
+# A backup somebody took on purpose is never on a timer's list to prune.
+#
+# Deliberately not `AUTO-`: the image prunes `AUTOBACKUP-*`, and while `AUTO-` does
+# not in fact match that glob, a reader checking whether these survive should not have
+# to work that out.
+SCHEDULED_PREFIX = "SCHEDULED-"
+
 LAYOUT_MODERN = "1.0"
 LAYOUT_LEGACY = "legacy"
 
@@ -465,7 +474,7 @@ class WorldStore:
         log.info("World %r deleted from %s (%s).", safe, self.root, ", ".join(removed))
         return removed
 
-    def backup(self, name: str) -> "Backup":
+    def backup(self, name: str, *, prefix: str = BACKUP_PREFIX) -> "Backup":
         """Zip one world into the backups folder and return what was written.
 
         Unlike every other world action this does NOT require the server to be off,
@@ -487,7 +496,7 @@ class WorldStore:
         self._ensure_backups_dir()
 
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-        target = self._free_backup_path(safe, stamp)
+        target = self._free_backup_path(safe, stamp, prefix)
         staging = target.with_name("." + target.name + ".part")
         try:
             with zipfile.ZipFile(staging, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -523,16 +532,17 @@ class WorldStore:
             ) from exc
         _set_mode(self.backups_dir, WORLD_DIR_MODE, fallback=WORLD_DIR_MODE_FALLBACK)
 
-    def _free_backup_path(self, safe: str, stamp: str) -> Path:
-        """``MANUAL-<world>-<stamp>.zip``, with a counter if that second is taken.
+    def _free_backup_path(self, safe: str, stamp: str, prefix: str) -> Path:
+        """``<prefix><world>-<stamp>.zip``, with a counter if that second is taken.
 
         Two backups of one world inside the same second is a double-click, and
-        silently overwriting the first would make the button a liar.
+        silently overwriting the first would make the button a liar. It is also what
+        keeps the timer honest when a manual backup lands in the same second.
         """
-        candidate = self.backups_dir / f"{BACKUP_PREFIX}{safe}-{stamp}.zip"
+        candidate = self.backups_dir / f"{prefix}{safe}-{stamp}.zip"
         suffix = 2
         while candidate.exists():
-            candidate = self.backups_dir / f"{BACKUP_PREFIX}{safe}-{stamp}-{suffix}.zip"
+            candidate = self.backups_dir / f"{prefix}{safe}-{stamp}-{suffix}.zip"
             suffix += 1
         return candidate
 
@@ -577,7 +587,7 @@ class WorldStore:
             ) from exc
         _set_mode(self.root, WORLD_DIR_MODE, fallback=WORLD_DIR_MODE_FALLBACK)
 
-    def place(self, plan: "UploadPlan") -> World:
+    def place(self, plan: "UploadPlan", *, overwrite: bool = False) -> World:
         """Write a validated upload to a hidden staging directory, then move it home.
 
         Raises ``WorldError`` and leaves the volume as it found it -- bar the staging
@@ -585,6 +595,14 @@ class WorldStore:
         rename is the last statement for a reason: until it runs, nothing on the volume
         carries the world's name, so there is no moment at which the server could load
         a half-written world.
+
+        ``overwrite`` replaces a world of the same name instead of refusing it, and
+        exists for restoring a backup over the world it came from. The existing world
+        is removed only once the replacement is fully staged, which is the same reason
+        the rename is last: a restore that fails partway leaves the original world
+        exactly as it was rather than deleting it on the strength of a copy that never
+        arrived. Whether the operator meant it, and whether the server is off, are the
+        route's business -- as with ``delete``.
         """
         self._ensure_root()
         try:
@@ -607,7 +625,15 @@ class WorldStore:
 
             # Re-checked as late as possible: reading a few hundred megabytes takes
             # long enough for a second tab to have uploaded the same name meanwhile.
-            self.refuse_collision(plan.name)
+            if overwrite:
+                # Everything is staged by now, so this is the last moment at which the
+                # world being replaced still has to exist. If it is already gone --
+                # deleted from another tab while the restore was reading -- that is the
+                # outcome asked for, so a missing world is not an error here.
+                if self.blocking_entries(plan.name):
+                    self.delete(plan.name)
+            else:
+                self.refuse_collision(plan.name)
 
             if plan.layout == LAYOUT_MODERN:
                 _set_mode(staging, WORLD_DIR_MODE, fallback=WORLD_DIR_MODE_FALLBACK)

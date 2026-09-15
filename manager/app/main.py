@@ -39,9 +39,11 @@ import asyncio
 import hashlib
 import logging
 import os
+import time
 import uuid
 from datetime import datetime
-from dataclasses import dataclass, field
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +85,21 @@ from .setup import (
     one_line,
     validated_modifiers,
     validated_settings,
+)
+from .backups import (
+    BackupError,
+    BackupSchedule,
+    BackupStore,
+    ScheduleStore,
+    schedule_from_payload,
+    next_wake,
+    TICK_SECONDS,
+    MAX_INTERVAL_HOURS,
+    MAX_KEEP,
+    MIN_INTERVAL_HOURS,
+    MIN_KEEP,
+    DEFAULT_INTERVAL_HOURS,
+    DEFAULT_KEEP,
 )
 from .state_store import ManagerState, StateStore, StateStoreError
 from .mods import (
@@ -256,6 +273,10 @@ class AppConfig:
     world_upload_max_files: int = DEFAULT_MAX_UPLOAD_FILES
     # On the manager-owned `valheim-manager-state` volume, mode 0600.
     state_file: str = "/srv/state/manager-state.json"
+    # Beside it on the same manager-owned volume, but a separate file: the state file
+    # holds the admin hash and the session secret, and a backup interval has no
+    # business sharing a document whose only job is credentials.
+    backup_schedule_file: str = "/srv/state/backup-schedule.json"
     # Only used to print a clickable setup URL; the manager never calls itself.
     manager_url: str = ""
     restart_policy: str = "unless-stopped"
@@ -308,6 +329,9 @@ def config_from_env() -> AppConfig:
             "WORLD_UPLOAD_MAX_FILES", DEFAULT_MAX_UPLOAD_FILES, minimum=2
         ),
         state_file=os.environ.get("MANAGER_STATE_FILE", AppConfig.state_file),
+        backup_schedule_file=os.environ.get(
+            "BACKUP_SCHEDULE_FILE", AppConfig.backup_schedule_file
+        ),
         manager_url=os.environ.get("MANAGER_URL", "").strip(),
         restart_policy=os.environ.get("VALHEIM_RESTART_POLICY", "unless-stopped"),
         stop_timeout=_env_int("VALHEIM_STOP_TIMEOUT", 120, minimum=1),
@@ -451,6 +475,8 @@ def create_app(
         max_upload_files=config.world_upload_max_files,
         backups_dir=config.backups_dir,
     )
+    schedule_store = ScheduleStore(config.backup_schedule_file)
+    backup_store = BackupStore(world_store)
     mod_store = mods or ModStore(
         config.mods_dir,
         staging_plugins_dir=config.staging_plugins_dir,
@@ -734,6 +760,17 @@ def create_app(
                 # gets status only from the log socket: without this the clock would
                 # sit blank from page load until the first push connects.
                 "server_clock": server_clock(),
+                # The backup card's number fields get their bounds from the same
+                # definitions the manager clamps to, so the field cannot offer a value
+                # the store would then quietly change.
+                "backup_limits": {
+                    "min_interval_hours": MIN_INTERVAL_HOURS,
+                    "max_interval_hours": MAX_INTERVAL_HOURS,
+                    "default_interval_hours": DEFAULT_INTERVAL_HOURS,
+                    "min_keep": MIN_KEEP,
+                    "max_keep": MAX_KEEP,
+                    "default_keep": DEFAULT_KEEP,
+                },
                 "worlds_dir": str(world_store.root),
                 "mod_upload_max_human": human_size(mod_store.max_upload_bytes),
                 "max_upload_bytes": world_store.max_upload_bytes,
@@ -1476,6 +1513,176 @@ def create_app(
         require_same_origin(request)
         return await run_in_threadpool(_backup_world, await _json_body(request))
 
+    # ------------------------------------------------------------------ backups
+    #
+    # Listing, deleting, restoring, and the timer's settings. Deleting and restoring
+    # go through BackupStore, which will only ever touch archives the manager wrote
+    # -- the game prunes its own by age and racing it is not the manager's job.
+
+    def _backups_panel(
+        *, error: str = "", message: str = "", warning: str = ""
+    ) -> dict[str, Any]:
+        """Everything the backups card draws, in one payload.
+
+        Sent whole after every action, for the same reason the worlds panel is: the
+        list, the schedule and the phase have to agree, and three round trips to
+        rebuild them is three chances to disagree.
+        """
+        schedule = schedule_store.load()
+        payload: dict[str, Any] = {
+            "schedule": schedule.as_dict(),
+            # The bounds come from their definitions rather than a copy in the markup,
+            # so the field the panel offers and the value the manager stores cannot
+            # disagree about what is allowed.
+            "limits": {
+                "min_interval_hours": MIN_INTERVAL_HOURS,
+                "max_interval_hours": MAX_INTERVAL_HOURS,
+                "default_interval_hours": DEFAULT_INTERVAL_HOURS,
+                "min_keep": MIN_KEEP,
+                "max_keep": MAX_KEEP,
+                "default_keep": DEFAULT_KEEP,
+            },
+            "loaded_world": _loaded_world(),
+        }
+        try:
+            payload["backups"] = [entry.as_dict() for entry in backup_store.entries()]
+        except BackupError as exc:
+            payload["backups"] = []
+            error = error or str(exc)
+        if error:
+            payload["error"] = error
+        if message:
+            payload["message"] = message
+        if warning:
+            payload["warning"] = warning
+        return payload
+
+    def _backups_refused(status: int, reason: str) -> JSONResponse:
+        return JSONResponse(_backups_panel(error=reason), status_code=status)
+
+    def _list_backups() -> JSONResponse:
+        return JSONResponse(_backups_panel())
+
+    def _delete_backup(body: dict[str, Any]) -> JSONResponse:
+        """Remove one archive. Blocking, so: threadpool.
+
+        No off-server gate: an archive is a file in a folder the game only appends to,
+        so deleting one cannot disturb a running server. That is the same reasoning
+        that lets the Backup button work while people are playing.
+        """
+        raw = body.get("name")
+        if not isinstance(raw, str):
+            return _backups_refused(400, "Say which backup to delete.")
+        try:
+            gone = backup_store.delete(raw)
+        except BackupError as exc:
+            log.warning("Backup delete refused: %s", exc)
+            return _backups_refused(400, str(exc))
+        log.info("Backups panel deleted %s.", gone.name)
+        return JSONResponse(_backups_panel(message=f"Deleted {gone.name}."))
+
+    def _restore_backup(body: dict[str, Any]) -> JSONResponse:
+        """Write an archive back out as a world. Blocking, so: threadpool.
+
+        Gated on the server being off, like Load and Delete: this writes into the
+        worlds folder, and a running server has the world open.
+
+        ``overwrite`` has to be asked for explicitly. Without it a name already on the
+        volume is refused by the upload path, which makes the default non-destructive
+        -- restore beside the current world and switch to it with Load.
+        """
+        raw = body.get("name")
+        if not isinstance(raw, str):
+            return _backups_refused(400, "Say which backup to restore.")
+        target = body.get("target")
+        target = target.strip() if isinstance(target, str) else ""
+        overwrite = bool(body.get("overwrite"))
+
+        blocked = _world_action_blocked()
+        if blocked is not None:
+            # Shaped for the worlds panel; re-shape it for this one so the message
+            # lands in the card the operator is looking at.
+            return _backups_refused(
+                409,
+                "Your server has to be off before a backup can be restored -- it has "
+                "the world open. Press Stop, wait for it to go down, then try again. "
+                "Nothing was written.",
+            )
+
+        try:
+            placed = backup_store.restore(raw, target_name=target, overwrite=overwrite)
+        except (BackupError, WorldError) as exc:
+            log.warning("Backup restore refused: %s", exc)
+            status = 409 if isinstance(exc, WorldCollisionError) else 400
+            return _backups_refused(status, str(exc))
+
+        log.info(
+            "Backups panel restored %s as world %r (overwrite=%s).",
+            raw,
+            placed.name,
+            overwrite,
+        )
+        line = (
+            f"Restored {placed.name} ({human_size(placed.size_bytes)}), replacing the "
+            "world that was there."
+            if overwrite
+            else f"Restored as a new world called {placed.name} "
+            f"({human_size(placed.size_bytes)})."
+        )
+        note = (
+            ""
+            if overwrite or placed.name == _loaded_world()
+            else f"Your server is still set to load {_loaded_world() or 'another world'} "
+            f"-- press Load on {placed.name} in the list above to play it."
+        )
+        return JSONResponse(_backups_panel(message=line, warning=note))
+
+    def _save_schedule(body: dict[str, Any]) -> JSONResponse:
+        """Store the timer's settings. Blocking (it writes a file), so: threadpool."""
+        current = schedule_store.load()
+        wanted = schedule_from_payload(body, current)
+        try:
+            schedule_store.save(wanted)
+        except BackupError as exc:
+            return _backups_refused(500, str(exc))
+        log.info(
+            "Backup schedule set: enabled=%s every %sh, keeping %s per world.",
+            wanted.enabled,
+            wanted.interval_hours,
+            wanted.keep_per_world,
+        )
+        line = (
+            f"Automatic backups on, every {wanted.interval_hours} hour"
+            f"{'' if wanted.interval_hours == 1 else 's'}, keeping the newest "
+            f"{wanted.keep_per_world}."
+            if wanted.enabled
+            else "Automatic backups off. Nothing already saved was removed."
+        )
+        return JSONResponse(_backups_panel(message=line))
+
+    @app.get("/api/backups")
+    async def api_backups(request: Request) -> JSONResponse:
+        require_session(request)
+        return await run_in_threadpool(_list_backups)
+
+    @app.post("/api/backups/delete")
+    async def api_backup_delete(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_delete_backup, await _json_body(request))
+
+    @app.post("/api/backups/restore")
+    async def api_backup_restore(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_restore_backup, await _json_body(request))
+
+    @app.post("/api/backups/schedule")
+    async def api_backup_schedule(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_save_schedule, await _json_body(request))
+
     @app.post("/api/worlds/delete")
     async def api_world_delete(request: Request) -> JSONResponse:
         require_session(request)
@@ -1811,6 +2018,104 @@ def create_app(
                 await websocket.send_json({"type": "log", "lines": fresh})
             tick += 1
             await asyncio.sleep(config.log_poll_seconds)
+
+    # ----------------------------------------------------- the backup timer
+    #
+    # The first thing in this app that runs without a browser attached. The log poll
+    # above lives inside a WebSocket handler and stops the moment the last tab
+    # closes, which is exactly what a backup timer must not do -- the whole point is
+    # that it runs while nobody is looking.
+
+    def _run_due_backup(schedule: BackupSchedule) -> BackupSchedule:
+        """Back up the loaded world and prune. Blocking; called in the threadpool.
+
+        Returns the schedule to store. ``last_run_at`` is advanced even when there
+        was nothing to back up, and that is deliberate: a server with no world yet
+        would otherwise be "due" on every single tick, and would retry a genuine
+        failure sixty times an hour while filling the log.
+        """
+        now = time.time()
+        world = _loaded_world()
+        if not world:
+            return replace(
+                schedule,
+                last_run_at=now,
+                last_error="There is no world loaded yet, so there was nothing to back up.",
+            )
+        try:
+            made, pruned = backup_store.run_scheduled(world, schedule.keep_per_world)
+        except (WorldError, BackupError) as exc:
+            log.warning("Scheduled backup of %r failed: %s", world, exc)
+            return replace(schedule, last_run_at=now, last_error=str(exc))
+        log.info(
+            "Scheduled backup of %r written as %s%s.",
+            world,
+            made,
+            f"; pruned {len(pruned)}" if pruned else "",
+        )
+        return replace(schedule, last_run_at=now, last_error="")
+
+    async def _backup_timer() -> None:
+        """Wake, ask whether a backup is owed, and go back to sleep.
+
+        Polling a short tick rather than sleeping until the due time: the interval can
+        be changed in the panel while this loop is inside its sleep, and a loop parked
+        for 24 hours would not notice for 24 hours. The question is cheap and the
+        answer is almost always no.
+
+        Nothing in here may raise out of the loop. A failing backup -- a full disk, a
+        world deleted mid-run -- must not take the timer down with it and leave a
+        dashboard that silently never backs up again.
+        """
+        log.info("Backup timer started.")
+        while True:
+            try:
+                schedule = await run_in_threadpool(schedule_store.load)
+                due = schedule.due_at()
+                if due is not None and time.time() >= due:
+                    updated = await run_in_threadpool(_run_due_backup, schedule)
+                    await run_in_threadpool(schedule_store.save, updated)
+                    schedule = updated
+                await asyncio.sleep(next_wake(schedule))
+            except asyncio.CancelledError:
+                log.info("Backup timer stopped.")
+                raise
+            except Exception:
+                # Deliberately broad: whatever this was, the timer has to survive it.
+                log.exception("The backup timer hit an unexpected error; continuing.")
+                await asyncio.sleep(TICK_SECONDS)
+
+    @app.on_event("startup")
+    async def _start_backup_timer() -> None:
+        # The timer only runs where its state directory already exists, and that
+        # condition is doing real work rather than being defensive. In the container
+        # /srv/state is a mounted volume and is always there. Everywhere else -- a
+        # checkout running the test suite, someone importing create_app to poke at a
+        # route -- it is not, and a timer that creates directories at the filesystem
+        # root and then starts zipping whatever world it can find is not something an
+        # app should do merely because it was imported.
+        state_dir = Path(config.backup_schedule_file).parent
+        if not state_dir.is_dir():
+            log.info(
+                "Backup timer not started: %s does not exist, so there is nowhere to "
+                "record when a backup last ran. Automatic backups are off until it does.",
+                state_dir,
+            )
+            app.state.backup_timer = None
+            return
+        app.state.backup_timer = asyncio.create_task(_backup_timer())
+
+    @app.on_event("shutdown")
+    async def _stop_backup_timer() -> None:
+        task = getattr(app.state, "backup_timer", None)
+        if task is None:
+            return
+        task.cancel()
+        # Awaited rather than left to be garbage collected, so a backup already in
+        # flight is given the chance to finish its rename instead of being abandoned
+        # halfway -- and so the shutdown log line means what it says.
+        with suppress(asyncio.CancelledError):
+            await task
 
     return app
 
