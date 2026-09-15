@@ -39,6 +39,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import shutil
 import stat
 import tempfile
@@ -53,6 +54,17 @@ log = logging.getLogger("valheim_manager")
 # Where the worlds live, inside the manager container. The game container mounts the
 # same volume at the same path; only the manager's mount is new.
 DEFAULT_WORLDS_DIR = "/config/worlds_local"
+
+# Where the game server keeps its own hourly backups, and where a manual one goes
+# too -- one place to look, rather than a second folder nobody knows about.
+DEFAULT_BACKUPS_DIR = "/config/backups"
+
+# The prefix that keeps a manual backup alive. The image prunes its own backups by
+# age (BACKUPS_MAX_AGE, 3 days by default), but only files matching its own patterns
+# -- `worlds-*.zip` and `AUTOBACKUP-*` -- and it does not recurse. A name outside
+# both patterns is never pruned, which is the point: a backup somebody took on
+# purpose should not evaporate on a timer.
+BACKUP_PREFIX = "MANUAL-"
 
 LAYOUT_MODERN = "1.0"
 LAYOUT_LEGACY = "legacy"
@@ -174,6 +186,19 @@ def sanitised_name(raw: str, *, what: str = "world name") -> str:
 
 
 @dataclass(frozen=True)
+class Backup:
+    """One manual backup, as the panel reports it."""
+
+    name: str
+    size_bytes: int
+    world: str
+
+    @property
+    def size(self) -> str:
+        return human_size(self.size_bytes)
+
+
+@dataclass(frozen=True)
 class World:
     """One world on the volume, as the panel lists it."""
 
@@ -262,8 +287,10 @@ class WorldStore:
         *,
         max_upload_bytes: int = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024,
         max_upload_files: int = DEFAULT_MAX_UPLOAD_FILES,
+        backups_dir: str | os.PathLike[str] = DEFAULT_BACKUPS_DIR,
     ):
         self.root = Path(worlds_dir)
+        self.backups_dir = Path(backups_dir)
         # The two limits on one upload, kept here so the route, the panel and the
         # placement all read the same number rather than each holding a copy.
         self.max_upload_bytes = max_upload_bytes
@@ -437,6 +464,95 @@ class WorldStore:
             removed.append(entry)
         log.info("World %r deleted from %s (%s).", safe, self.root, ", ".join(removed))
         return removed
+
+    def backup(self, name: str) -> "Backup":
+        """Zip one world into the backups folder and return what was written.
+
+        Unlike every other world action this does NOT require the server to be off,
+        and that is deliberate: it only ever reads the world and writes somewhere
+        else, so there is nothing for it to corrupt. A backup taken while people are
+        playing is a copy of whatever the server last flushed to disk -- which is
+        exactly what the game's own hourly backup is too.
+
+        The zip is built under a dotted temporary name and renamed into place, so a
+        half-written archive never carries a name that looks like a backup.
+        """
+        safe = sanitised_name(name)
+        entries = self.blocking_entries(safe)
+        if not entries:
+            raise WorldError(
+                f"There is no world called {safe!r} on the server, so there is "
+                "nothing to back up."
+            )
+        self._ensure_backups_dir()
+
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+        target = self._free_backup_path(safe, stamp)
+        staging = target.with_name("." + target.name + ".part")
+        try:
+            with zipfile.ZipFile(staging, "w", zipfile.ZIP_DEFLATED) as archive:
+                for entry in entries:
+                    self._add_to_archive(archive, entry)
+        except OSError as exc:
+            staging.unlink(missing_ok=True)
+            raise WorldError(
+                f"Could not write the backup ({exc}). Nothing was saved."
+            ) from exc
+        except Exception:
+            staging.unlink(missing_ok=True)
+            raise
+
+        _set_mode(staging, WORLD_FILE_MODE)
+        _move(staging, target)
+        size = target.stat().st_size
+        log.info("World %r backed up to %s (%s).", safe, target, human_size(size))
+        return Backup(name=target.name, size_bytes=size, world=safe)
+
+    def _ensure_backups_dir(self) -> None:
+        if self.backups_dir.is_dir():
+            return
+        if self.backups_dir.exists():
+            raise WorldError(f"{self.backups_dir} exists but is not a directory.")
+        try:
+            self.backups_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise WorldError(
+                f"Could not open the backups folder ({exc}). Run `docker compose up -d` "
+                "on the server -- that re-runs the one-off step that grants the manager "
+                "access -- then try again. Nothing was saved."
+            ) from exc
+        _set_mode(self.backups_dir, WORLD_DIR_MODE, fallback=WORLD_DIR_MODE_FALLBACK)
+
+    def _free_backup_path(self, safe: str, stamp: str) -> Path:
+        """``MANUAL-<world>-<stamp>.zip``, with a counter if that second is taken.
+
+        Two backups of one world inside the same second is a double-click, and
+        silently overwriting the first would make the button a liar.
+        """
+        candidate = self.backups_dir / f"{BACKUP_PREFIX}{safe}-{stamp}.zip"
+        suffix = 2
+        while candidate.exists():
+            candidate = self.backups_dir / f"{BACKUP_PREFIX}{safe}-{stamp}-{suffix}.zip"
+            suffix += 1
+        return candidate
+
+    def _add_to_archive(self, archive: "zipfile.ZipFile", entry: str) -> None:
+        """One entry of a world: a 1.0 world's directory, or one pre-1.0 file.
+
+        Entry names are re-resolved against the worlds directory for the same reason
+        an upload's are: nothing here should be able to read outside it, and a symlink
+        is skipped rather than followed.
+        """
+        source = _resolved_within(self.root, entry)
+        if source.is_symlink():
+            return
+        if source.is_file():
+            archive.write(source, arcname=entry)
+            return
+        for path in sorted(source.rglob("*")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            archive.write(path, arcname=str(Path(entry) / path.relative_to(source)))
 
     # ---------------------------------------------------------------- placement
 

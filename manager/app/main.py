@@ -83,6 +83,7 @@ from .setup import (
 )
 from .state_store import ManagerState, StateStore, StateStoreError
 from .worlds import (
+    DEFAULT_BACKUPS_DIR,
     DEFAULT_MAX_UPLOAD_FILES,
     DEFAULT_MAX_UPLOAD_MB,
     DEFAULT_WORLDS_DIR,
@@ -209,6 +210,7 @@ class AppConfig:
     # On the game's own `valheim-config` volume, which the manager now mounts too.
     # The game server owns this directory; the manager only ever adds worlds to it.
     worlds_dir: str = DEFAULT_WORLDS_DIR
+    backups_dir: str = DEFAULT_BACKUPS_DIR
     world_upload_max_bytes: int = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024
     world_upload_max_files: int = DEFAULT_MAX_UPLOAD_FILES
     # On the manager-owned `valheim-manager-state` volume, mode 0600.
@@ -240,6 +242,7 @@ def config_from_env() -> AppConfig:
         data_volume=os.environ.get("VALHEIM_DATA_VOLUME", "valheim-data"),
         env_file=os.environ.get("VALHEIM_ENV_FILE", AppConfig.env_file),
         worlds_dir=os.environ.get("VALHEIM_WORLDS_DIR", AppConfig.worlds_dir),
+        backups_dir=os.environ.get("VALHEIM_BACKUPS_DIR", AppConfig.backups_dir),
         world_upload_max_bytes=_env_int(
             "WORLD_UPLOAD_MAX_MB", DEFAULT_MAX_UPLOAD_MB, minimum=1
         )
@@ -389,6 +392,7 @@ def create_app(
         config.worlds_dir,
         max_upload_bytes=config.world_upload_max_bytes,
         max_upload_files=config.world_upload_max_files,
+        backups_dir=config.backups_dir,
     )
 
     auth, credential_source = _resolve_credentials(config, states)
@@ -1130,6 +1134,45 @@ def create_app(
                 message=f"{name} is gone. It cannot be recovered from here.",
             )
         )
+
+    def _backup_world(body: dict[str, Any]) -> JSONResponse:
+        """Zip a world into the backups folder. Blocking, so: threadpool.
+
+        The one world action with no server-off gate. It reads the world and writes
+        somewhere else entirely, so there is nothing for a running server to collide
+        with -- and a backup you can only take by stopping the server is one nobody
+        takes before the risky thing they wanted it for.
+        """
+        raw = body.get("name")
+        if not isinstance(raw, str):
+            return _world_refused(400, "Say which world to back up.")
+        try:
+            name = sanitised_world_name(raw)
+        except WorldError as exc:
+            return _world_refused(400, str(exc))
+
+        try:
+            backup = world_store.backup(name)
+        except WorldError as exc:
+            log.warning("World backup refused: %s", exc)
+            return _world_refused(400, str(exc))
+        log.info("Worlds panel backed up %r as %s.", name, backup.name)
+        return JSONResponse(
+            _world_panel(
+                backed_up=True,
+                name=backup.name,
+                message=(
+                    f"Backed up {backup.world} as {backup.name} ({backup.size}). "
+                    "It is kept until you remove it."
+                ),
+            )
+        )
+
+    @app.post("/api/worlds/backup")
+    async def api_world_backup(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_backup_world, await _json_body(request))
 
     @app.post("/api/worlds/delete")
     async def api_world_delete(request: Request) -> JSONResponse:

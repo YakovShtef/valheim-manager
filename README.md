@@ -177,6 +177,24 @@ Your current world isn't touched — it stays in the list and you can switch bac
 whenever you like. If the name is already taken, the dashboard says so and points you
 at **Load** instead of quietly opening the world that's already there.
 
+### Backing up a world
+
+Press **Backup** on any world. It writes a `.zip` into the same folder the game keeps
+its own hourly backups in (`/config/backups`), named `MANUAL-<world>-<date>.zip`.
+
+Two things make it different from the automatic ones:
+
+- **It works while people are playing.** Every other control here needs the server
+  off; this one doesn't, because it only reads the world and writes somewhere else.
+  What you get is a copy of whatever the server last saved to disk — same as the
+  game's own hourly backup.
+- **It's never deleted on a timer.** The game prunes its own backups after
+  `BACKUPS_MAX_AGE` days (3 by default), but only files matching its own naming. A
+  `MANUAL-` one falls outside that, so it stays until you remove it yourself.
+
+If the zip can't be finished for any reason, nothing is left behind that looks like a
+backup — the archive is built under a temporary name and only renamed once complete.
+
 ### Deleting a world
 
 Press **Delete** on any world and you'll get a confirmation naming the world and its
@@ -721,9 +739,9 @@ manager/
 
 ### Not built yet
 
-A "Backup now" button, browsing and restoring backups, and admin/ban-list editing.
-The game image keeps taking its own hourly world backups into `/config/backups`
-regardless.
+Browsing and restoring backups from the dashboard, and admin/ban-list editing. The
+game image keeps taking its own hourly world backups into `/config/backups`
+alongside any you take by hand.
 
 ---
 

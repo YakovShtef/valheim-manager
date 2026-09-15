@@ -639,6 +639,12 @@
     el.pickFiles.disabled = !!reason || busy;
     el.uploadName.disabled = !!reason || busy;
     el.worldsRefresh.disabled = busy;
+    var backups = el.worldsBody.querySelectorAll("button[data-backup-world]");
+    for (var b = 0; b < backups.length; b++) {
+      // Deliberately NOT gated on `reason`: backing up a running server is the case
+      // this button exists for.
+      backups[b].disabled = busy;
+    }
     var deletes = el.worldsBody.querySelectorAll("button[data-delete-world]");
     for (var d = 0; d < deletes.length; d++) {
       // A row that came back refused keeps its own explanation and stays reachable;
@@ -711,6 +717,7 @@
       // Deleting the world the server is set to load would leave WORLD_NAME pointing
       // at nothing, and the next Start would quietly build a brand-new world under
       // that name. The manager refuses it; the row says so before it is pressed.
+      action.appendChild(backupButton(world));
       action.appendChild(deleteButton(world,
         "This is the world your server is set to load. Load a different world first " +
         "(or make a new one), then you can delete this one."));
@@ -728,10 +735,22 @@
       button.setAttribute("data-world", world.name);
       button.textContent = "Load";
       action.appendChild(button);
+      action.appendChild(backupButton(world));
       action.appendChild(deleteButton(world, ""));
     }
     tr.appendChild(action);
     return tr;
+  }
+
+  // The only world control that stays live while the server is running: a backup
+  // reads the world and writes somewhere else, so there is nothing to collide with.
+  function backupButton(world) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.setAttribute("data-backup-world", world.name);
+    button.textContent = "Backup";
+    return button;
   }
 
   // Present on every row, refused on the active one. Hiding it there would leave the
@@ -832,6 +851,13 @@
     if (el.deleteDialog && el.deleteDialog.close && el.deleteDialog.open) {
       el.deleteDialog.close();
     }
+  }
+
+  function backupWorld(name) {
+    system("backing up " + name);
+    post("/api/worlds/backup", { name: name }).then(function (payload) {
+      if (payload && payload.backed_up && payload.message) { system(payload.message); }
+    });
   }
 
   function confirmDelete() {
@@ -1367,6 +1393,9 @@
       var button = event.target.closest
         ? event.target.closest("button[data-world]") : null;
       if (button && !button.disabled) { switchWorld(button.getAttribute("data-world")); }
+      var save = event.target.closest
+        ? event.target.closest("button[data-backup-world]") : null;
+      if (save && !save.disabled) { backupWorld(save.getAttribute("data-backup-world")); }
       var remove = event.target.closest
         ? event.target.closest("button[data-delete-world]") : null;
       if (remove && !remove.disabled &&

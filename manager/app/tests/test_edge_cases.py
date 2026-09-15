@@ -5661,6 +5661,210 @@ def test_the_umask_default_does_not_leak_into_the_settings_the_panel_shows(stack
 
 
 # =====================================================================
+# Backing a world up by hand.
+#
+# The only world action with no server-off gate, because it reads the world and
+# writes somewhere else. The thing most worth pinning is the NAME: the game image
+# prunes its own backups by age, and a manual backup that quietly evaporated after
+# three days would be worse than no button at all.
+# =====================================================================
+
+
+@pytest.fixture
+def backups(worlds, tmp_path):
+    """The worlds fixture, with the backups folder pointed somewhere inspectable."""
+    directory = tmp_path / "backups"
+    worlds["app"].state.worlds.backups_dir = directory
+    worlds["backups"] = directory
+    return worlds
+
+
+def backup_world(client: TestClient, name: str, *, origin: str = ORIGIN):
+    return client.post(
+        "/api/worlds/backup", json={"name": name}, headers={"Origin": origin}
+    )
+
+
+def test_a_backup_is_a_zip_of_the_whole_world(backups):
+    make_modern_world(backups["dir"], "Seedy", chunks=3)
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        response = backup_world(client, "Seedy")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["backed_up"] is True
+
+    written = list(backups["backups"].glob("*.zip"))
+    assert len(written) == 1, written
+    archive = written[0]
+    assert payload["name"] == archive.name
+    with zipfile.ZipFile(archive) as opened:
+        assert opened.testzip() is None, "the archive is corrupt"
+        names = sorted(opened.namelist())
+    # Every file of the world, under the world's own folder name.
+    assert "Seedy/_main.1.db2" in names
+    assert "Seedy/_main.1.fwl2" in names
+    assert sum(1 for name in names if name.endswith(".chunk")) == 3
+    # Nothing half-written left behind.
+    assert list(backups["backups"].glob(".*.part")) == []
+
+
+def test_a_backup_of_a_pre_1_0_world_takes_both_files(backups):
+    make_legacy_world(backups["dir"], "Oldsave")
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        assert backup_world(client, "Oldsave").status_code == 200
+
+    archive = next(iter(backups["backups"].glob("*.zip")))
+    with zipfile.ZipFile(archive) as opened:
+        assert sorted(opened.namelist()) == ["Oldsave.db", "Oldsave.fwl"]
+
+
+def test_the_backup_name_is_one_the_game_will_never_prune(backups):
+    """The image deletes its own backups by age, matching `worlds-*.zip` and
+    `AUTOBACKUP-*`, and does not recurse. A manual backup has to fall outside both
+    patterns or it silently disappears after BACKUPS_MAX_AGE days -- which is the one
+    thing a backup must not do."""
+    make_modern_world(backups["dir"], "Seedy")
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        name = backup_world(client, "Seedy").json()["name"]
+
+    assert name.startswith("MANUAL-")
+    assert not name.startswith("worlds-")
+    assert not name.startswith("AUTOBACKUP-")
+    assert "Seedy" in name and name.endswith(".zip")
+
+
+@pytest.mark.parametrize("state", ["running", "ready", "restarting"])
+def test_a_backup_works_while_the_server_is_up(backups, state):
+    """Every other world action is refused while the server runs. This one must not
+    be: a backup you can only take by stopping the server is one nobody takes before
+    the risky thing they wanted it for."""
+    make_modern_world(backups["dir"], "Seedy")
+    container = backups["docker"].seed_stopped()
+    container.status = "running" if state == "ready" else state
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        response = backup_world(client, "Seedy")
+
+    assert response.status_code == 200, response.text
+    assert len(list(backups["backups"].glob("*.zip"))) == 1
+    assert container.removed is False
+
+
+def test_two_backups_in_the_same_second_do_not_overwrite_each_other(backups):
+    """A double-click is one press too many, not a reason to lose the first copy."""
+    make_modern_world(backups["dir"], "Seedy")
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        first = backup_world(client, "Seedy").json()["name"]
+        second = backup_world(client, "Seedy").json()["name"]
+
+    assert first != second
+    assert len(list(backups["backups"].glob("*.zip"))) == 2
+
+
+def test_backing_up_a_world_that_is_not_there_is_refused(backups):
+    with TestClient(backups["app"]) as client:
+        login(client)
+        response = backup_world(client, "Ghost")
+
+    assert response.status_code == 400
+    assert "nothing to back up" in response.json()["error"]
+    assert list(backups["backups"].glob("*.zip")) == []
+
+
+@pytest.mark.parametrize("raw", ["../escape", "a/b", "", "   ", ".."])
+def test_backing_up_refuses_a_name_that_is_not_one_world(backups, raw):
+    make_modern_world(backups["dir"], "Seedy")
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        response = backup_world(client, raw)
+
+    assert response.status_code == 400
+    assert list(backups["backups"].glob("*.zip")) == []
+
+
+def test_backing_up_needs_the_origin_header(backups):
+    make_modern_world(backups["dir"], "Seedy")
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        response = client.post("/api/worlds/backup", json={"name": "Seedy"})
+
+    assert response.status_code == 403
+    assert list(backups["backups"].glob("*.zip")) == []
+
+
+def test_a_backup_leaves_the_world_exactly_as_it_was(backups):
+    """It reads. That is the whole reason it needs no server-off gate."""
+    make_modern_world(backups["dir"], "Seedy", chunks=2)
+    before = volume_snapshot(backups["dir"])
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        assert backup_world(client, "Seedy").status_code == 200
+
+    assert volume_snapshot(backups["dir"]) == before
+
+
+def test_a_backup_that_fails_halfway_leaves_no_file_claiming_to_be_one(backups, monkeypatch):
+    """The archive is built under a dotted temporary name and renamed at the end. A
+    half-written zip carrying a backup's name is worse than no backup: it is the file
+    someone reaches for after losing a world."""
+    make_modern_world(backups["dir"], "Seedy", chunks=3)
+    store = backups["app"].state.worlds
+    calls = {"n": 0}
+    real = store._add_to_archive
+
+    seen_midway = {}
+
+    def explode(archive, entry):
+        calls["n"] += 1
+        # The window that matters: while the archive is still being written, is there
+        # already a file on disk carrying a backup's name? Cleanup on the way out
+        # hides this -- deleting the target looks identical to never having made it --
+        # so the only place to catch it is from inside the write.
+        seen_midway["zips"] = sorted(path.name for path in backups["backups"].glob("*.zip"))
+        real(archive, entry)
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(store, "_add_to_archive", explode)
+
+    with TestClient(backups["app"]) as client:
+        login(client)
+        response = backup_world(client, "Seedy")
+
+    assert calls["n"] == 1, "the failure never happened, so this proves nothing"
+    assert seen_midway["zips"] == [], (
+        "a half-written archive was already carrying a backup's name: "
+        f"{seen_midway['zips']}"
+    )
+    assert response.status_code == 400
+    assert list(backups["backups"].glob("*.zip")) == [], "a partial archive was left named as a backup"
+    assert list(backups["backups"].glob(".*")) == [], "the staging file was left behind"
+
+
+def test_the_panel_offers_a_backup_on_every_row_including_the_active_one(worlds):
+    """Backing up the world you are playing is the main case, so the button cannot be
+    one of the ones the active row loses."""
+    js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    row = js[js.index("function worldRow(") : js.index("function backupButton(")]
+    # Both branches of the row -- the active world and every other -- add one.
+    assert row.count("backupButton(world)") == 2
+
+
+# =====================================================================
 # The words the panels use.
 #
 # Every explanation on this page is read by someone who wants to play Valheim with
