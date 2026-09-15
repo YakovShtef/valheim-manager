@@ -1083,6 +1083,127 @@ def create_app(
             ["WORLD_NAME"], _world_panel, saved_line=f"Your server will load {name} next time you start it."
         )
 
+    def _delete_world(body: dict[str, Any]) -> JSONResponse:
+        """Remove a world from the volume. Blocking, so: threadpool.
+
+        Same order as every other world action -- prove the server is off, validate,
+        then act -- with one extra gate that only this route needs: the world the
+        server is *set to load* is refused outright. Deleting it would leave
+        ``WORLD_NAME`` pointing at nothing, and the next Start would quietly generate
+        a brand-new world under that name rather than reporting a problem. Switching
+        first, or creating a new world first, is the safe order and the refusal says so.
+        """
+        raw = body.get("name")
+        if not isinstance(raw, str):
+            return _world_refused(400, "Say which world to delete.")
+        try:
+            name = sanitised_world_name(raw)
+        except WorldError as exc:
+            return _world_refused(400, str(exc))
+
+        blocked = _world_action_blocked()
+        if blocked is not None:
+            return blocked
+
+        try:
+            active = store.read().get("WORLD_NAME", "")
+        except SettingsFileError as exc:
+            return _world_refused(500, str(exc))
+        if active and active.strip().lower() == name.lower():
+            return _world_refused(
+                409,
+                f"{name} is the world your server is set to load, so it cannot be "
+                "deleted. Load a different world first -- or make a new one -- and "
+                "then delete this one. Nothing was deleted.",
+            )
+
+        try:
+            removed = world_store.delete(name)
+        except WorldError as exc:
+            log.warning("World delete refused: %s", exc)
+            return _world_refused(400, str(exc))
+        log.info("Worlds panel deleted %r (%s).", name, ", ".join(removed))
+        return JSONResponse(
+            _world_panel(
+                deleted=True,
+                name=name,
+                message=f"{name} is gone. It cannot be recovered from here.",
+            )
+        )
+
+    @app.post("/api/worlds/delete")
+    async def api_world_delete(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_delete_world, await _json_body(request))
+
+    def _new_world(body: dict[str, Any]) -> JSONResponse:
+        """Point ``WORLD_NAME`` at a name nothing is using yet. Blocking: threadpool.
+
+        The manager cannot *generate* a world -- Valheim does that itself, on the next
+        Start, from whatever ``WORLD_NAME`` says. So "new world" is exactly the switch
+        path with the collision check inverted: the switch insists the name already
+        exists, and this insists it does not. Anything else would quietly adopt an
+        existing save under the banner of making a new one.
+        """
+        raw = body.get("name")
+        if not isinstance(raw, str):
+            return _world_refused(400, "Give the new world a name.")
+        try:
+            name = sanitised_world_name(raw)
+        except WorldError as exc:
+            return _world_refused(400, str(exc))
+
+        blocked = _world_action_blocked()
+        if blocked is not None:
+            return blocked
+
+        try:
+            current = store.read()
+            values = validated_settings({"WORLD_NAME": name}, current=current)
+        except SettingsFileError as exc:
+            return _world_refused(500, str(exc))
+        except SetupInputError as exc:
+            return _world_refused(400, str(exc))
+
+        # Read the directory itself, not the world list: a half world is invisible in
+        # the list and would still be adopted by a Start under this name.
+        try:
+            blocking = world_store.blocking_entries(values["WORLD_NAME"])
+        except WorldError as exc:
+            return _world_refused(500, str(exc))
+        if blocking:
+            return _world_refused(
+                409,
+                f"There is already a world called {name} on the server "
+                f"({', '.join(blocking)}), so this would open that one rather than "
+                "make a new one. Pick a different name, or press Load on it instead.",
+            )
+
+        try:
+            format_env_value("WORLD_NAME", values["WORLD_NAME"])
+        except SettingsFileError as exc:
+            return _world_refused(400, str(exc))
+        try:
+            store.write(values)
+        except SettingsFileError as exc:
+            return _world_refused(500, str(exc))
+        log.info("Worlds panel set WORLD_NAME to a new world %r in %s.", name, store.path)
+        return _recreate_after_write(
+            ["WORLD_NAME"],
+            _world_panel,
+            saved_line=(
+                f"Ready to make {name}. Press Start and Valheim builds it, with a "
+                "random seed it picks at that moment."
+            ),
+        )
+
+    @app.post("/api/worlds/new")
+    async def api_world_new(request: Request) -> JSONResponse:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_new_world, await _json_body(request))
+
     @app.post("/api/worlds/switch")
     async def api_world_switch(request: Request) -> JSONResponse:
         require_session(request)

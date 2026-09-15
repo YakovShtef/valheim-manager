@@ -40,6 +40,26 @@ h2 { font-size: 15px; letter-spacing: .02em; text-transform: uppercase; color: v
 
 .muted { color: var(--muted); }
 
+.world-new { margin: 0 0 18px; }
+.world-new label { display: block; margin-bottom: 6px; }
+.world-new .controls { gap: 8px; }
+.world-new input { max-width: 320px; }
+
+/* A quieter danger: destructive, but it should not shout from every row. */
+button.danger-quiet { color: var(--danger); border-color: rgba(224,122,106,.35); }
+button.danger-quiet:hover:not(:disabled) { border-color: var(--danger); }
+
+dialog.confirm {
+  max-width: 460px; width: calc(100% - 32px);
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px; padding: 20px;
+}
+dialog.confirm::backdrop { background: rgba(0,0,0,.6); }
+dialog.confirm h2 { margin-top: 0; }
+dialog.confirm .confirm-subject { font-size: 16px; margin: 0 0 12px; }
+dialog.confirm .confirm-subject span { display: block; margin-top: 2px; }
+dialog.confirm .controls { margin-top: 18px; justify-content: flex-end; }
+
 /* the tab strip */
 .tabs {
   display: flex; flex-wrap: wrap; align-items: center; gap: 12px;

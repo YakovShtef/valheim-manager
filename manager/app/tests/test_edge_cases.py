@@ -5219,6 +5219,304 @@ def test_every_panel_is_pinned_hidden_by_its_own_rule(stack):
 
 
 # =====================================================================
+# Deleting a world, and making a new one.
+#
+# Delete is the only operation in this project that destroys data, so what it
+# refuses matters more than what it does: the world the server is set to load, a
+# name that is not a single path segment, a symlink, and anything at all while the
+# server is up. "New world" is the switch with the collision check inverted -- the
+# manager cannot generate a save, so all it can do is point WORLD_NAME at a name
+# nothing is using and let the next Start build it.
+# =====================================================================
+
+
+def delete_world(client: TestClient, name: str, *, origin: str = ORIGIN):
+    return client.post(
+        "/api/worlds/delete", json={"name": name}, headers={"Origin": origin}
+    )
+
+
+def new_world(client: TestClient, name: str, *, origin: str = ORIGIN):
+    return client.post(
+        "/api/worlds/new", json={"name": name}, headers={"Origin": origin}
+    )
+
+
+def test_deleting_a_world_removes_its_whole_directory(worlds):
+    make_modern_world(worlds["dir"], "Doomed", chunks=4)
+    make_modern_world(worlds["dir"], "Keeper")
+    worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = delete_world(client, "Doomed")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["deleted"] is True
+    assert "Doomed" in payload["message"]
+    assert not (worlds["dir"] / "Doomed").exists()
+    # ...and only that world.
+    assert (worlds["dir"] / "Keeper").is_dir()
+    assert [world["name"] for world in payload["worlds"]] == ["Keeper"]
+
+
+def test_deleting_a_pre_1_0_world_takes_both_halves(worlds):
+    make_legacy_world(worlds["dir"], "Oldsave")
+    worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        assert delete_world(client, "Oldsave").status_code == 200
+
+    # A .db left behind would be invisible in the list and still block an upload of
+    # the same name -- the worst of both outcomes.
+    assert not (worlds["dir"] / "Oldsave.db").exists()
+    assert not (worlds["dir"] / "Oldsave.fwl").exists()
+
+
+def test_deleting_takes_a_half_world_the_listing_never_showed(worlds):
+    """A lone .db is not listed as a world, is in the way of an upload, and is exactly
+    what someone would be trying to clear out."""
+    (worlds["dir"] / "Ghost.db").write_bytes(b"orphan")
+    worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        listed = client.get("/api/worlds").json()
+        assert [world["name"] for world in listed["worlds"]] == []
+        assert delete_world(client, "Ghost").status_code == 200
+
+    assert not (worlds["dir"] / "Ghost.db").exists()
+
+
+def test_deleting_the_world_the_server_loads_is_refused(worlds):
+    make_modern_world(worlds["dir"], "Dedicated")
+    worlds["docker"].seed_stopped()
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = delete_world(client, "Dedicated")
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert "set to load" in error
+    # The refusal has to say what to do instead, or it is a dead end.
+    assert "Load a different world" in error or "make a new one" in error
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+@pytest.mark.parametrize("state", ["running", "restarting", "paused"])
+def test_deleting_is_refused_while_the_server_is_live(worlds, state):
+    make_modern_world(worlds["dir"], "Seedy")
+    container = worlds["docker"].seed_stopped()
+    container.status = state
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = delete_world(client, "Seedy")
+
+    assert response.status_code == 409
+    assert "Turn the server off first" in response.json()["error"]
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+@pytest.mark.parametrize("raw", ["../escape", "a/b", "a\\b", "", "   ", ".", "..", "C:name"])
+def test_deleting_refuses_a_name_that_is_not_one_world(worlds, raw):
+    make_modern_world(worlds["dir"], "Seedy")
+    worlds["docker"].seed_stopped()
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = delete_world(client, raw)
+
+    assert response.status_code == 400, response.text
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+def test_deleting_a_world_that_is_not_there_says_so(worlds):
+    worlds["docker"].seed_stopped()
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = delete_world(client, "Ghost")
+
+    assert response.status_code == 400
+    assert "no world called" in response.json()["error"]
+
+
+@POSIX_ONLY
+def test_deleting_refuses_a_link_rather_than_following_it(worlds, tmp_path):
+    """A link in worlds_local pointing at something else on the host is not a world,
+    and rmtree through it would take the target with it."""
+    outside = tmp_path / "not-a-world"
+    outside.mkdir()
+    (outside / "keepme").write_bytes(b"important")
+    (worlds["dir"] / "Linked").symlink_to(outside, target_is_directory=True)
+    worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = delete_world(client, "Linked")
+
+    assert response.status_code == 400
+    assert "link" in response.json()["error"]
+    assert (outside / "keepme").exists()
+
+
+def test_deleting_needs_the_origin_header(worlds):
+    make_modern_world(worlds["dir"], "Seedy")
+    worlds["docker"].seed_stopped()
+    before = volume_snapshot(worlds["dir"])
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = client.post("/api/worlds/delete", json={"name": "Seedy"})
+
+    assert response.status_code == 403
+    assert volume_snapshot(worlds["dir"]) == before
+
+
+# ------------------------------------------------------------------ new world
+
+
+def test_a_new_world_points_the_server_at_a_name_nothing_is_using(worlds):
+    container = worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = new_world(client, "Secondworld")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["saved"] is True
+    assert "WORLD_NAME=Secondworld" in worlds["env"].read_text(encoding="utf-8")
+    # The same step that makes any settings change real.
+    assert container.removed is True
+    # Nothing was created on the volume: Valheim builds the world, not the manager.
+    assert not (worlds["dir"] / "Secondworld").exists()
+    assert "Press Start" in payload["message"]
+
+
+def test_a_new_world_refuses_a_name_that_already_exists(worlds):
+    make_modern_world(worlds["dir"], "Seedy")
+    worlds["docker"].seed_stopped()
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = new_world(client, "Seedy")
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert "already a world called Seedy" in error
+    # Saying "press Load instead" is the difference between a refusal and a dead end.
+    assert "Load" in error
+    assert worlds["env"].read_text(encoding="utf-8") == before
+
+
+def test_a_new_world_refuses_a_half_world_the_listing_never_showed(worlds):
+    """A lone .db is invisible in the list, and the next Start would adopt it under
+    this name -- which is the one thing "new world" must never do."""
+    (worlds["dir"] / "Ghost.db").write_bytes(b"orphan")
+    worlds["docker"].seed_stopped()
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = new_world(client, "Ghost")
+
+    assert response.status_code == 409
+    assert "Ghost.db" in response.json()["error"]
+
+
+@pytest.mark.parametrize("state", ["running", "restarting", "paused"])
+def test_making_a_new_world_is_refused_while_the_server_is_live(worlds, state):
+    container = worlds["docker"].seed_stopped()
+    container.status = state
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = new_world(client, "Secondworld")
+
+    assert response.status_code == 409
+    assert "Turn the server off first" in response.json()["error"]
+    assert worlds["env"].read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("raw", ["../escape", "a/b", "", "   ", "..", "x" * 65])
+def test_a_new_world_refuses_a_name_that_is_not_one_world(worlds, raw):
+    worlds["docker"].seed_stopped()
+    before = worlds["env"].read_text(encoding="utf-8")
+
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        response = new_world(client, raw)
+
+    assert response.status_code == 400, response.text
+    assert worlds["env"].read_text(encoding="utf-8") == before
+
+
+def test_the_worlds_panel_offers_delete_and_a_way_to_make_a_new_world(worlds):
+    with TestClient(worlds["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    assert 'id="world-new-form"' in page and 'id="btn-world-new"' in page
+    # The confirmation is a real dialog, and Cancel is what the keyboard lands on --
+    # the destructive button must never be the default.
+    assert 'id="delete-dialog"' in page
+    dialog = page[page.index('id="delete-dialog"') :]
+    dialog = dialog[: dialog.index("</dialog>")]
+    assert 'id="btn-delete-confirm"' in dialog and 'id="btn-delete-cancel"' in dialog
+    assert "autofocus" in dialog[: dialog.index('id="btn-delete-confirm"')]
+    assert "cannot bring it back" in " ".join(dialog.split())
+
+
+@pytest.mark.parametrize("raw", ["../escape", "a/b", "a\b", "..", ".", "", "   ", ".hidden"])
+def test_the_store_refuses_to_delete_anything_that_is_not_one_world(worlds_dir, raw):
+    """The route sanitises the name before the store sees it, so this guard has no
+    caller that can currently reach it -- which is exactly why it needs its own test.
+    The next caller (deleting a world's mods along with it, say) would otherwise be the
+    one to find out it was never load-bearing.
+
+    What it buys is the MESSAGE, not the safety. Escaping is already impossible without
+    it: ``blocking_entries`` only ever matches the bare names of direct children, so
+    ``../escape`` matches nothing and the delete does nothing. But it would then report
+    "there is no world called '../escape'", which describes the wrong problem. So the
+    assertion here is that the refusal talks about the name.
+    """
+    make_modern_world(worlds_dir, "Seedy")
+    store = WorldStore(worlds_dir)
+
+    with pytest.raises(WorldError) as caught:
+        store.delete(raw)
+
+    assert "no world called" not in str(caught.value), (
+        f"{raw!r} was treated as a world that happens to be missing, rather than as a "
+        f"name that is not a world: {caught.value}"
+    )
+    assert (worlds_dir / "Seedy").is_dir()
+
+
+def test_the_store_never_deletes_outside_its_own_directory(worlds_dir, tmp_path):
+    """`../` is not a world name, and worlds_local sits inside a volume with other
+    things in it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keepme").write_bytes(b"important")
+    store = WorldStore(worlds_dir)
+
+    with pytest.raises(WorldError):
+        store.delete("../outside")
+
+    assert (outside / "keepme").exists()
+    assert outside.is_dir()
+
+
+# =====================================================================
 # The words the panels use.
 #
 # Every explanation on this page is read by someone who wants to play Valheim with

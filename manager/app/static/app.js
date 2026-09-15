@@ -47,6 +47,14 @@
     worldsTable: document.getElementById("worlds-table"),
     worldsEmpty: document.getElementById("worlds-empty"),
     worldsError: document.getElementById("worlds-error"),
+    worldNewForm: document.getElementById("world-new-form"),
+    worldNewName: document.getElementById("world-new-name"),
+    worldNewButton: document.getElementById("btn-world-new"),
+    deleteDialog: document.getElementById("delete-dialog"),
+    deleteName: document.getElementById("delete-dialog-name"),
+    deleteDetail: document.getElementById("delete-dialog-detail"),
+    deleteConfirm: document.getElementById("btn-delete-confirm"),
+    deleteCancel: document.getElementById("btn-delete-cancel"),
     worldsLocked: document.getElementById("worlds-locked"),
     worldsRefresh: document.getElementById("btn-worlds-refresh"),
     uploadForm: document.getElementById("world-upload-form"),
@@ -631,6 +639,17 @@
     el.pickFiles.disabled = !!reason || busy;
     el.uploadName.disabled = !!reason || busy;
     el.worldsRefresh.disabled = busy;
+    var deletes = el.worldsBody.querySelectorAll("button[data-delete-world]");
+    for (var d = 0; d < deletes.length; d++) {
+      // A row that came back refused stays refused whatever the server is doing.
+      deletes[d].disabled = !!reason || busy || !!deletes[d].getAttribute("data-refused");
+    }
+    if (el.worldNewName) {
+      el.worldNewName.disabled = !!reason || busy;
+      el.worldNewButton.disabled = !!reason || busy;
+    }
+    // An open confirmation is about a world the operator can no longer delete.
+    if (reason && el.deleteDialog && el.deleteDialog.open) { closeDelete(); }
   }
 
   function renderWorlds(payload) {
@@ -687,6 +706,10 @@
       active.className = "tag tag-active";
       active.textContent = "active";
       action.appendChild(active);
+      // Deleting the world the server is set to load would leave WORLD_NAME pointing
+      // at nothing, and the next Start would quietly build a brand-new world under
+      // that name. The manager refuses it; the row says so before it is pressed.
+      action.appendChild(deleteButton(world, "load another world first"));
     } else if (world.loadable === false) {
       // The manager would refuse this name if it were sent, so offering Load would
       // hand the operator a 400 about a name they never typed. Say why instead.
@@ -701,9 +724,91 @@
       button.setAttribute("data-world", world.name);
       button.textContent = "Load";
       action.appendChild(button);
+      action.appendChild(deleteButton(world, ""));
     }
     tr.appendChild(action);
     return tr;
+  }
+
+  // Present on every row, refused on the active one. Hiding it there would leave the
+  // operator hunting for a button that is simply not drawn.
+  function deleteButton(world, refusal) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost danger-quiet";
+    button.setAttribute("data-delete-world", world.name);
+    button.textContent = "Delete";
+    if (refusal) {
+      button.disabled = true;
+      button.setAttribute("data-refused", refusal);
+      var why = document.createElement("div");
+      why.className = "muted small";
+      why.textContent = refusal;
+      var wrap = document.createElement("span");
+      wrap.appendChild(button);
+      wrap.appendChild(why);
+      return wrap;
+    }
+    return button;
+  }
+
+  // ------------------------------------------------------- delete confirmation
+
+  // The world the dialog is currently asking about. Read on confirm rather than bound
+  // to the button, so a refresh that rebuilds the table underneath an open dialog
+  // cannot retarget it at whatever row now sits in that position.
+  var pendingDelete = null;
+
+  function askDelete(name) {
+    var world = null;
+    for (var i = 0; i < lastWorlds.length; i++) {
+      if (lastWorlds[i].name === name) { world = lastWorlds[i]; }
+    }
+    if (!world || !el.deleteDialog) { return; }
+    pendingDelete = world.name;
+    el.deleteName.textContent = world.name;
+    el.deleteDetail.textContent =
+      world.size + (world.files ? " in " + world.files + " file(s)" : "");
+    if (el.deleteDialog.showModal) {
+      el.deleteDialog.showModal();
+    } else {
+      // No <dialog> support: fall back rather than deleting without asking.
+      if (window.confirm("Delete " + world.name + " for good?")) { confirmDelete(); }
+    }
+  }
+
+  function closeDelete() {
+    pendingDelete = null;
+    if (el.deleteDialog && el.deleteDialog.close && el.deleteDialog.open) {
+      el.deleteDialog.close();
+    }
+  }
+
+  function confirmDelete() {
+    var name = pendingDelete;
+    closeDelete();
+    if (!name) { return; }
+    system("deleting world " + name);
+    post("/api/worlds/delete", { name: name }).then(function (payload) {
+      if (payload && payload.deleted && payload.message) { system(payload.message); }
+    });
+  }
+
+  function createWorld() {
+    var name = el.worldNewName.value.trim();
+    if (!name) {
+      showError("Give the new world a name.", "worlds");
+      return;
+    }
+    system("making a new world called " + name);
+    post("/api/worlds/new", { name: name }).then(function (payload) {
+      if (!payload || !payload.saved) { return; }
+      el.worldNewName.value = "";
+      if (payload.message) { system(payload.message); }
+      if (editing && el.settingsForm.elements.WORLD_NAME) {
+        el.settingsForm.elements.WORLD_NAME.value = payload.active_world || name;
+      }
+    });
   }
 
   function refreshWorlds() {
@@ -1211,7 +1316,22 @@
       var button = event.target.closest
         ? event.target.closest("button[data-world]") : null;
       if (button && !button.disabled) { switchWorld(button.getAttribute("data-world")); }
+      var remove = event.target.closest
+        ? event.target.closest("button[data-delete-world]") : null;
+      if (remove && !remove.disabled) { askDelete(remove.getAttribute("data-delete-world")); }
     });
+    if (el.worldNewForm) {
+      el.worldNewForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (!el.worldNewButton.disabled) { createWorld(); }
+      });
+    }
+    if (el.deleteDialog) {
+      el.deleteConfirm.addEventListener("click", confirmDelete);
+      el.deleteCancel.addEventListener("click", closeDelete);
+      // Esc closes a <dialog> on its own; make that clear the pending world too.
+      el.deleteDialog.addEventListener("close", function () { pendingDelete = null; });
+    }
     el.worldsRefresh.addEventListener("click", function () { refreshWorlds(); });
     el.pickFolder.addEventListener("click", function () { el.folderInput.click(); });
     el.pickFiles.addEventListener("click", function () { el.fileInput.click(); });

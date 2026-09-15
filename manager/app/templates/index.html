@@ -224,6 +224,22 @@
       to play a world with a <em>seed</em> you chose yourself.
     </p>
 
+    {# Making a world is the switch with the collision check inverted: the manager
+       cannot generate a save, Valheim does that on the next Start. #}
+    <form id="world-new-form" class="world-new" autocomplete="off">
+      <label for="world-new-name">Make a new world</label>
+      <div class="controls">
+        <input id="world-new-name" name="name" type="text" spellcheck="false"
+               placeholder="a name you have not used yet">
+        <button type="submit" id="btn-world-new" class="ghost">Create</button>
+      </div>
+      <p class="muted small">
+        Valheim builds it the next time you press <strong>Start</strong>, with a
+        random seed it picks at that moment. Your current world stays where it is and
+        you can switch back to it whenever you like.
+      </p>
+    </form>
+
     <table class="settings" id="worlds-table">
       <thead>
         <tr>
@@ -293,6 +309,29 @@
       </div>
     </form>
   </section>
+
+  {# Deleting is the one action here that destroys data, so it asks first -- and the
+     question names the world and what it is about to remove rather than asking
+     "are you sure?" about nothing in particular. #}
+  <dialog id="delete-dialog" class="confirm" aria-labelledby="delete-dialog-title">
+    <h2 id="delete-dialog-title">Delete this world?</h2>
+    <p class="confirm-subject">
+      <strong id="delete-dialog-name"></strong>
+      <span id="delete-dialog-detail" class="muted small"></span>
+    </p>
+    <p class="banner banner-error" id="delete-dialog-warning">
+      This removes the save from the server for good, and the dashboard cannot bring
+      it back.
+    </p>
+    <p class="muted small">
+      If the game's own hourly backups are switched on, a copy may still exist in the
+      backups folder on the server. That is the only way back.
+    </p>
+    <div class="controls">
+      <button type="button" id="btn-delete-cancel" class="ghost" autofocus>Cancel</button>
+      <button type="button" id="btn-delete-confirm" class="danger">Delete forever</button>
+    </div>
+  </dialog>
 </div>
 {% endblock %}
 

@@ -179,6 +179,25 @@ world your server opens.
 The list only offers worlds that genuinely exist, so you can't accidentally end up
 in a brand-new empty world this way.
 
+### Starting a fresh world
+
+Type a name into **Make a new world** and press **Create**, then press **Start**.
+Valheim builds the world at that moment, with a random seed it picks itself.
+
+Your current world isn't touched — it stays in the list and you can switch back to it
+whenever you like. If the name is already taken, the dashboard says so and points you
+at **Load** instead of quietly opening the world that's already there.
+
+### Deleting a world
+
+Press **Delete** on any world and you'll get a confirmation naming the world and its
+size. It removes the save from the server for good, and the dashboard can't bring it
+back — though if the game's hourly backups are switched on, a copy may still be in the
+backups folder on the server.
+
+You can't delete the world your server is set to load. The button says so on that row.
+Load a different world first — or make a new one — and then delete it.
+
 ### Bringing a world over from your own game
 
 Drag the world's folder onto the drop zone (or use **Choose a folder…**).
@@ -215,7 +234,7 @@ arrives intact, so a failed upload can't leave you with half a world.
 > new format **permanently**. Keep your own copy of the original pair if that
 > matters to you. The dashboard warns you about this too.
 
-There's no delete button yet — removing a world is still a manual job on the host.
+
 
 ---
 
@@ -684,9 +703,9 @@ manager/
 
 ### Not built yet
 
-A "Backup now" button, browsing and restoring backups, mod toggles, admin/ban-list
-editing, and deleting a world from the UI. The game image keeps taking its own hourly
-world backups into `/config/backups` regardless.
+A "Backup now" button, browsing and restoring backups, and admin/ban-list editing.
+The game image keeps taking its own hourly world backups into `/config/backups`
+regardless.
 
 ---
 

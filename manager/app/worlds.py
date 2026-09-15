@@ -39,6 +39,7 @@ import logging
 import os
 import re
 import shutil
+import shutil
 import stat
 import tempfile
 import zipfile
@@ -384,6 +385,59 @@ class WorldStore:
         blocking = self.blocking_entries(name)
         if blocking:
             raise WorldCollisionError(collision_message(name, blocking))
+
+    def delete(self, name: str) -> list[str]:
+        """Remove every entry a world called ``name`` occupies. Returns what went.
+
+        The only destructive operation in this project, so it is deliberately narrow:
+
+        * The name goes through ``sanitised_name`` first, so a path, a traversal or a
+          stray colon is refused before anything is looked at, let alone removed.
+        * What gets removed is ``blocking_entries`` -- the same case-insensitive read
+          of the directory that the upload uses to refuse a collision. That means a
+          *half* world (a lone ``.db``, or a pair whose halves are spelled
+          differently) is removed too. It is invisible in the listing, it is in the
+          way of an upload, and leaving it behind would be the one outcome nobody
+          asked for.
+        * Every entry is re-resolved against the root before it is touched, and a
+          symlink is refused rather than followed. A link in ``worlds_local`` pointing
+          at ``/`` is not something to find out about afterwards.
+
+        Whether the server is off, and whether this is the world it is set to load,
+        are the caller's business -- the route answers both before it gets here.
+        """
+        safe = sanitised_name(name)
+        entries = self.blocking_entries(safe)
+        if not entries:
+            raise WorldError(
+                f"There is no world called {safe!r} on the server. Nothing was "
+                "deleted -- refresh the list."
+            )
+        removed: list[str] = []
+        for entry in entries:
+            target = _resolved_within(self.root, entry)
+            try:
+                if target.is_symlink():
+                    raise WorldError(
+                        f"{entry!r} is a link, not a world, so the manager will not "
+                        "delete it -- a link can point anywhere. Remove it on the "
+                        "host if you meant to."
+                    )
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            except WorldError:
+                raise
+            except OSError as exc:
+                raise WorldError(
+                    f"Could not delete {entry!r}: {exc}. "
+                    + ("Nothing was deleted." if not removed else
+                       f"Already removed: {', '.join(removed)}.")
+                ) from exc
+            removed.append(entry)
+        log.info("World %r deleted from %s (%s).", safe, self.root, ", ".join(removed))
+        return removed
 
     # ---------------------------------------------------------------- placement
 
