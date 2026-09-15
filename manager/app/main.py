@@ -36,8 +36,10 @@ place and closes ``/setup`` permanently; no restart is needed.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
+import uuid
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,6 +125,30 @@ CREDENTIAL_ENV_VARS = ("ADMIN_USER", "ADMIN_PASSWORD_HASH", "SESSION_SECRET")
 _UNCONFIGURED_ALLOWED = (SETUP_PATH, "/healthz")
 
 APP_DIR = Path(__file__).resolve().parent
+
+
+def _asset_version() -> str:
+    """A token that changes whenever the dashboard's JavaScript or CSS changes.
+
+    Appended to their URLs, so a browser cannot serve a deploy from cache. This has
+    cost real time twice: a fix that looked broken was nothing but a stale app.js,
+    and from the outside a cached script is indistinguishable from a bug -- the page
+    renders, the markup is new, and only the behaviour is old.
+
+    Hashed from content rather than taken from mtime: a rebuild rewrites timestamps
+    whether or not anything changed, and an asset that did not change should stay
+    cached. Read once at startup because these files are baked into the image.
+    """
+    digest = hashlib.sha256()
+    for name in ("app.js", "style.css"):
+        try:
+            digest.update((APP_DIR / "static" / name).read_bytes())
+        except OSError:
+            # Missing or unreadable is the static mount's problem to report. Here it
+            # only means the token cannot be pinned to content, so fall back to a
+            # value that busts every time rather than one that never does.
+            return uuid.uuid4().hex[:12]
+    return digest.hexdigest()[:12]
 
 # Confirmed against the image's own documentation: the Valheim dedicated server
 # prints "Game server connected" once it is registered and accepting players.
@@ -526,6 +552,10 @@ def create_app(
     app.state.mods = mod_store
 
     templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+    # A global rather than a key in each page's context: every template extends
+    # base.html, and a version the login page forgot to pass would be a stale
+    # stylesheet nobody thinks to look for.
+    templates.env.globals["asset_version"] = _asset_version()
     app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 
     @app.exception_handler(ApiError)

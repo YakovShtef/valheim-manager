@@ -284,12 +284,13 @@ services:
       LOG_TAIL_LINES: ${LOG_TAIL_LINES:-200}
       LOG_POLL_SECONDS: ${LOG_POLL_SECONDS:-1.0}
       STATUS_EVERY_N_POLLS: ${STATUS_EVERY_N_POLLS:-2}
-      # The zone the dashboard's clock reads in. A container with no TZ is UTC, which
-      # is rarely the wall clock of whoever is looking at the page -- set this to your
-      # own zone (e.g. TZ=Asia/Jerusalem) and the header clock, not just the log
-      # timestamps, matches the machine. The clock always draws the zone next to the
-      # time, so an unset TZ is visible rather than silently wrong.
-      TZ: ${TZ:-Etc/UTC}
+      # There is deliberately no TZ here. The dashboard's clock takes the host's zone
+      # from the /etc/localtime mount below, so it is right with nothing to configure.
+      #
+      # It must be ABSENT rather than empty: glibc reads an empty TZ as UTC, so
+      # `TZ: ${TZ:-}` would quietly override the mount with the very default it was
+      # meant to replace. To pin a zone by hand instead, add `TZ: Asia/Jerusalem`
+      # here -- an explicit value wins over the mount.
     ports:
       # 0.0.0.0 publishes on EVERY interface the host has. Behind home NAT that
       # means the LAN only; on a VPS or any host with a routable address it is
@@ -303,6 +304,13 @@ services:
       # manager creates valheim.env inside it on first boot and never overwrites one
       # that already exists.
       - ${VALHEIM_SETTINGS_DIR:-./settings}:/srv/settings
+      # The host's own time zone, read-only, so the dashboard's clock reads the wall
+      # clock of the machine the stack runs on without anyone setting TZ. This one
+      # file is all glibc needs -- it carries the offset AND the abbreviation the
+      # clock labels itself with, so /etc/timezone is not mounted as well: it is
+      # Debian-specific, and a bind mount whose source is missing becomes a
+      # directory, which is worse than not having it.
+      - /etc/localtime:/etc/localtime:ro
       # The manager's own credentials (admin user, password hash, session secret) at
       # mode 0600. A named volume, not a bind mount: nothing else should read it, and
       # it is initialised with the image's ownership so it is writable out of the box.
