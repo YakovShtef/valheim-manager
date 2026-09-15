@@ -76,7 +76,16 @@ function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
   }
 
   const fetches = [];
-  let worldsPayload = { worlds: [], worlds_error: null, current: null };
+  let worldsPayload = {
+    worlds: [
+      { name: "Dedicated", layout: "1.0", legacy: false, size: "48.2 MB", files: 812,
+        active: true, loadable: true, unloadable: "" },
+      { name: "Oldsave", layout: "legacy", legacy: true, size: "9.1 MB", files: 2,
+        active: false, loadable: true, unloadable: "" },
+    ],
+    worlds_error: null,
+    current: "Dedicated",
+  };
   win.fetch = function (path) {
     fetches.push(String(path));
     return Promise.resolve({
@@ -152,6 +161,9 @@ function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
       doc.getElementById("world-dropzone").dispatchEvent(ev);
     },
     file: (name) => new win.File(["x"], name, { type: "application/octet-stream" }),
+    hover: (node, type) => node.dispatchEvent(
+      new win.MouseEvent(type, { bubbles: true, cancelable: true })),
+    bubbleOf: (node) => node.closest(".hint-anchor").querySelector(".hint-bubble"),
     settle: () => new Promise((resolve) => win.setTimeout(resolve, 0)),
   };
 }
@@ -339,6 +351,116 @@ check("exactly_one_panel_is_ever_visible", () => {
     p.tab(name).click();
     eq(p.shown(), ["panel-" + name], `visible panels after selecting ${name}`);
   }
+});
+
+check("the_active_world_explains_its_refused_delete_on_hover", async () => {
+  // "load another world first" sitting under the button said nothing on its own. The
+  // reason belongs on the control it is about, at the moment you reach for it.
+  const p = makePage();
+  p.status("stopped");
+  await p.settle();
+
+  const refused = p.doc.querySelector('button[data-delete-world="Dedicated"]');
+  eq(!!refused, true, "the active world has no Delete button at all");
+  // Greyed out, but NOT `disabled`: a disabled button takes no hover and no focus, so
+  // the explanation would be unreachable by mouse and keyboard alike.
+  eq(refused.disabled, false, "the refused Delete is hard-disabled");
+  eq(refused.getAttribute("aria-disabled"), "true", "the refused Delete is not marked disabled");
+
+  const bubble = p.bubbleOf(refused);
+  eq(bubble.hidden, true, "the explanation is showing before anyone asked for it");
+  eq(refused.getAttribute("aria-describedby"), bubble.id, "the button does not name its own explanation");
+  eq(bubble.textContent.indexOf("Load a different world first") !== -1, true,
+     "the explanation does not say what to do: " + bubble.textContent);
+
+  p.hover(refused, "mouseover");
+  eq(bubble.hidden, false, "hovering did not show the explanation");
+  p.hover(refused, "mouseout");
+  eq(bubble.hidden, true, "the explanation stayed up after the mouse left");
+
+  // The keyboard gets there too.
+  refused.focus();
+  eq(bubble.hidden, false, "focusing did not show the explanation");
+  refused.blur();
+  eq(bubble.hidden, true, "the explanation stayed up after focus left");
+});
+
+check("a_refused_delete_does_nothing_when_pressed", async () => {
+  // The trap here: jsdom's `dialog.open` is always false and its stub `confirm()`
+  // returns undefined, so asserting either would pass whether or not the guard exists.
+  // Confirm is therefore stubbed to say YES -- if the click ever reaches askDelete,
+  // the delete goes through and this fails.
+  const p = makePage();
+  p.status("stopped");
+  await p.settle();
+  p.win.confirm = () => true;
+
+  const refused = p.doc.querySelector('button[data-delete-world="Dedicated"]');
+  const before = p.fetches.length;
+  refused.click();
+  await p.settle();
+
+  eq(p.fetches.slice(before).filter((u) => u.indexOf("/api/worlds/delete") === 0), [],
+     "pressing a refused Delete deleted the active world");
+});
+
+check("the_new_world_field_explains_itself_on_focus", async () => {
+  const p = makePage();
+  p.status("stopped");
+  await p.settle();
+  const field = p.doc.getElementById("world-new-name");
+  const bubble = p.doc.getElementById("world-new-hint");
+
+  eq(bubble.hidden, true, "the hint is showing before the field was touched");
+  eq(field.getAttribute("aria-describedby"), bubble.id, "the field does not name its hint");
+  field.focus();
+  eq(bubble.hidden, false, "focusing the field did not show the hint");
+  eq(bubble.textContent.indexOf("random seed") !== -1, true,
+     "the hint does not explain what Create does: " + bubble.textContent);
+  field.blur();
+  eq(bubble.hidden, true, "the hint stayed up after the field lost focus");
+});
+
+check("a_deletable_world_is_never_deleted_straight_off_the_click", async () => {
+  // jsdom implements no <dialog>, so this drives the fallback -- which is also the
+  // path any browser without <dialog> takes. Either way the rule is the same: a click
+  // on Delete asks, and a refusal deletes nothing.
+  const p = makePage();
+  p.status("stopped");
+  await p.settle();
+  eq(typeof p.doc.getElementById("delete-dialog").showModal, "undefined",
+     "precondition: this environment has no <dialog>, so the fallback is under test");
+
+  const asked = [];
+  p.win.confirm = (text) => { asked.push(text); return false; };
+  let before = p.fetches.length;
+  p.doc.querySelector('button[data-delete-world="Oldsave"]').click();
+  eq(asked.length, 1, "Delete did not ask anything");
+  eq(asked[0].indexOf("Oldsave") !== -1, true, "the question does not name the world: " + asked[0]);
+  eq(p.fetches.slice(before), [], "saying no still deleted the world");
+
+  // ...and saying yes goes through, exactly once.
+  p.win.confirm = () => true;
+  before = p.fetches.length;
+  p.doc.querySelector('button[data-delete-world="Oldsave"]').click();
+  await p.settle();
+  const posted = p.fetches.slice(before).filter((u) => u.indexOf("/api/worlds/delete") === 0);
+  eq(posted.length, 1, "confirming did not send exactly one delete");
+});
+
+check("the_confirmation_is_wired_for_browsers_that_have_it", async () => {
+  // What jsdom cannot run is still worth pinning: the dialog, its buttons, and the
+  // fact that Cancel is the one the keyboard lands on. Driven for real in a browser.
+  const p = makePage();
+  const dialog = p.doc.getElementById("delete-dialog");
+  eq(!!dialog, true, "there is no confirmation dialog in the page");
+  eq(dialog.hasAttribute("open"), false, "the dialog ships open");
+  const cancel = p.doc.getElementById("btn-delete-cancel");
+  const confirm = p.doc.getElementById("btn-delete-confirm");
+  eq(!!cancel && !!confirm, true, "the dialog is missing a button");
+  eq(cancel.hasAttribute("autofocus"), true, "Cancel is not what focus lands on");
+  eq(confirm.hasAttribute("autofocus"), false, "the destructive button takes focus");
+  eq(confirm.className.indexOf("danger") !== -1, true, "the destructive button is not marked as one");
 });
 
 check("the_settings_table_shows_plain_names", () => {

@@ -5542,6 +5542,9 @@ JARGON = [
 # are labelled facts an operator needs when something is wrong (the name is what a
 # `docker rm` takes), not an explanation of how any of it works.
 PROSE_RE = re.compile(r'<p[^>]*class="[^"]*muted[^"]*"[^>]*>(.*?)</p>', re.S)
+# Explanations that only appear on hover or focus are still explanations, and moving
+# one into a bubble must not move it out of this check.
+HINT_RE = re.compile(r'<span[^>]*class="[^"]*hint-bubble[^"]*"[^>]*>(.*?)</span>', re.S)
 
 
 def _panel_prose(page: str, panel_id: str) -> str:
@@ -5549,7 +5552,8 @@ def _panel_prose(page: str, panel_id: str) -> str:
     rest = page[start:]
     end = rest.find('<div id="panel-', 1)
     panel = rest if end == -1 else rest[:end]
-    sentences = [re.sub(r"<[^>]+>", " ", block) for block in PROSE_RE.findall(panel)]
+    blocks = PROSE_RE.findall(panel) + HINT_RE.findall(panel)
+    sentences = [re.sub(r"<[^>]+>", " ", block) for block in blocks]
     return " ".join(" ".join(sentences).split())
 
 

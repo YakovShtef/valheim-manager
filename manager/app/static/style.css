@@ -40,6 +40,31 @@ h2 { font-size: 15px; letter-spacing: .02em; text-transform: uppercase; color: v
 
 .muted { color: var(--muted); }
 
+/* A hint that is only needed at the moment of use: on hover, or on focus so the
+   keyboard reaches it too. Anchored above so it never covers what you are typing. */
+.hint-anchor { position: relative; display: inline-flex; }
+.hint-bubble {
+  position: absolute; bottom: calc(100% + 9px); left: 0;
+  width: max-content; max-width: 300px;
+  background: var(--panel-2); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 11px; font-size: 12px; line-height: 1.5; font-weight: 400;
+  text-align: left; white-space: normal; text-transform: none; letter-spacing: 0;
+  box-shadow: 0 8px 22px rgba(0,0,0,.5);
+  z-index: 20;
+}
+/* On a table row the anchor sits at the right edge, so the bubble grows leftwards. */
+.hint-bubble-end { left: auto; right: 0; }
+.hint-bubble::after {
+  content: ""; position: absolute; top: 100%; left: 18px;
+  border: 6px solid transparent; border-top-color: var(--line);
+}
+.hint-bubble-end::after { left: auto; right: 18px; }
+.hint-bubble[hidden] { display: none; }
+
+/* Greyed out, but still hoverable and focusable -- that is the whole point. */
+button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+
 .world-new { margin: 0 0 18px; }
 .world-new label { display: block; margin-bottom: 6px; }
 .world-new .controls { gap: 8px; }

@@ -229,15 +229,22 @@
     <form id="world-new-form" class="world-new" autocomplete="off">
       <label for="world-new-name">Make a new world</label>
       <div class="controls">
-        <input id="world-new-name" name="name" type="text" spellcheck="false"
-               placeholder="a name you have not used yet">
+        {# The explanation is a bubble on focus rather than a paragraph under the
+           field: it is only needed while someone is actually typing a name. Kept in
+           the DOM and referenced by aria-describedby, so a screen reader reads it
+           when the field takes focus whether or not the bubble is drawn. #}
+        <span class="hint-anchor">
+          <input id="world-new-name" name="name" type="text" spellcheck="false"
+                 aria-describedby="world-new-hint"
+                 placeholder="a name you have not used yet">
+          <span class="hint-bubble" id="world-new-hint" role="tooltip" hidden>
+            Valheim builds it the next time you press <strong>Start</strong>, with a
+            random seed it picks at that moment. Your current world stays where it is
+            and you can switch back to it whenever you like.
+          </span>
+        </span>
         <button type="submit" id="btn-world-new" class="ghost">Create</button>
       </div>
-      <p class="muted small">
-        Valheim builds it the next time you press <strong>Start</strong>, with a
-        random seed it picks at that moment. Your current world stays where it is and
-        you can switch back to it whenever you like.
-      </p>
     </form>
 
     <table class="settings" id="worlds-table">

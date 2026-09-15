@@ -641,8 +641,10 @@
     el.worldsRefresh.disabled = busy;
     var deletes = el.worldsBody.querySelectorAll("button[data-delete-world]");
     for (var d = 0; d < deletes.length; d++) {
-      // A row that came back refused stays refused whatever the server is doing.
-      deletes[d].disabled = !!reason || busy || !!deletes[d].getAttribute("data-refused");
+      // A row that came back refused keeps its own explanation and stays reachable;
+      // the panel lock is a plain disable, because the reason is already on screen.
+      if (deletes[d].getAttribute("data-refused")) { continue; }
+      deletes[d].disabled = !!reason || busy;
     }
     if (el.worldNewName) {
       el.worldNewName.disabled = !!reason || busy;
@@ -709,7 +711,9 @@
       // Deleting the world the server is set to load would leave WORLD_NAME pointing
       // at nothing, and the next Start would quietly build a brand-new world under
       // that name. The manager refuses it; the row says so before it is pressed.
-      action.appendChild(deleteButton(world, "load another world first"));
+      action.appendChild(deleteButton(world,
+        "This is the world your server is set to load. Load a different world first " +
+        "(or make a new one), then you can delete this one."));
     } else if (world.loadable === false) {
       // The manager would refuse this name if it were sent, so offering Load would
       // hand the operator a 400 about a name they never typed. Say why instead.
@@ -738,18 +742,59 @@
     button.className = "ghost danger-quiet";
     button.setAttribute("data-delete-world", world.name);
     button.textContent = "Delete";
-    if (refusal) {
-      button.disabled = true;
-      button.setAttribute("data-refused", refusal);
-      var why = document.createElement("div");
-      why.className = "muted small";
-      why.textContent = refusal;
-      var wrap = document.createElement("span");
-      wrap.appendChild(button);
-      wrap.appendChild(why);
-      return wrap;
-    }
-    return button;
+    if (!refusal) { return button; }
+
+    // NOT `disabled`. A disabled button takes no pointer events and no focus, so the
+    // hover that explains why it is greyed out would never fire and the keyboard
+    // could never reach the explanation at all. aria-disabled says the same thing to
+    // assistive tech; the click handler and the sync below both honour it.
+    button.setAttribute("aria-disabled", "true");
+    button.setAttribute("data-refused", refusal);
+    var bubble = document.createElement("span");
+    bubble.className = "hint-bubble hint-bubble-end";
+    bubble.setAttribute("role", "tooltip");
+    bubble.id = "refused-" + encodeURIComponent(world.name);
+    bubble.textContent = refusal;
+    bubble.hidden = true;
+    button.setAttribute("aria-describedby", bubble.id);
+    var wrap = document.createElement("span");
+    wrap.className = "hint-anchor";
+    wrap.appendChild(button);
+    wrap.appendChild(bubble);
+    return wrap;
+  }
+
+  // ------------------------------------------------------------------ hints
+
+  // One bubble behaviour for every anchor on the page: shown while the anchor is
+  // hovered or holds focus, hidden otherwise. Delegated, so rows rebuilt by a status
+  // push get it without re-wiring.
+  function hintFor(node) {
+    var anchor = node && node.closest ? node.closest(".hint-anchor") : null;
+    return anchor ? anchor.querySelector(".hint-bubble") : null;
+  }
+
+  function showHint(node, on) {
+    var bubble = hintFor(node);
+    if (bubble) { bubble.hidden = !on; }
+  }
+
+  function initHints() {
+    document.addEventListener("mouseover", function (e) { showHint(e.target, true); });
+    document.addEventListener("mouseout", function (e) {
+      // Moving between the button and its own bubble is not leaving the anchor.
+      var to = e.relatedTarget;
+      if (to && hintFor(to) === hintFor(e.target)) { return; }
+      showHint(e.target, false);
+    });
+    document.addEventListener("focusin", function (e) { showHint(e.target, true); });
+    document.addEventListener("focusout", function (e) { showHint(e.target, false); });
+    // Esc dismisses a bubble without moving focus, the way a tooltip should.
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") { return; }
+      var open = document.querySelectorAll(".hint-bubble:not([hidden])");
+      for (var i = 0; i < open.length; i++) { open[i].hidden = true; }
+    });
   }
 
   // ------------------------------------------------------- delete confirmation
@@ -771,9 +816,14 @@
       world.size + (world.files ? " in " + world.files + " file(s)" : "");
     if (el.deleteDialog.showModal) {
       el.deleteDialog.showModal();
+    } else if (window.confirm(
+        "Delete " + world.name + " for good? This cannot be undone from here.")) {
+      // No <dialog> support: still ask, never delete straight off a click.
+      confirmDelete();
     } else {
-      // No <dialog> support: fall back rather than deleting without asking.
-      if (window.confirm("Delete " + world.name + " for good?")) { confirmDelete(); }
+      // Declined. Clearing this matters: a world left pending is one a later confirm
+      // would delete without ever having been asked about.
+      pendingDelete = null;
     }
   }
 
@@ -1277,6 +1327,7 @@
   }
 
   initTabs();
+  initHints();
 
   el.start.addEventListener("click", function () { system("start requested"); post("/api/start"); });
   el.stop.addEventListener("click", function () { system("stop requested"); post("/api/stop"); });
@@ -1318,7 +1369,10 @@
       if (button && !button.disabled) { switchWorld(button.getAttribute("data-world")); }
       var remove = event.target.closest
         ? event.target.closest("button[data-delete-world]") : null;
-      if (remove && !remove.disabled) { askDelete(remove.getAttribute("data-delete-world")); }
+      if (remove && !remove.disabled &&
+          remove.getAttribute("aria-disabled") !== "true") {
+        askDelete(remove.getAttribute("data-delete-world"));
+      }
     });
     if (el.worldNewForm) {
       el.worldNewForm.addEventListener("submit", function (event) {
