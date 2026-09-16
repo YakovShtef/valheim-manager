@@ -19,6 +19,8 @@ from app.permission_lists import (
     ListFile,
     PermissionListError,
     PermissionLists,
+    normalise_typed_id,
+    to_file_id,
 )
 
 POSIX_ONLY = pytest.mark.skipif(
@@ -143,3 +145,47 @@ def test_the_manager_asks_for_group_writable_modes_whatever_the_platform(
     assert calls, "nothing had its mode set at all"
     for path, mode in calls:
         assert mode & stat.S_IWGRP, f"{path} was written without the group write bit"
+
+
+def test_a_steam_id_from_the_log_gains_the_v_prefix():
+    assert to_file_id("76561198086248026", "steam") == "V_76561198086248026"
+
+
+def test_an_unknown_platform_gets_no_invented_prefix():
+    """Guessing here would write a line that silently grants nobody anything."""
+    assert to_file_id("something", "unknown") is None
+
+
+def test_an_already_prefixed_id_is_left_alone():
+    assert to_file_id("V_76561198086248026", "steam") == "V_76561198086248026"
+
+
+def test_a_pasted_prefixed_id_is_accepted_as_typed():
+    assert normalise_typed_id("  V_76561198086248026 ") == ("V_76561198086248026", None)
+
+
+def test_a_pasted_xbox_style_id_is_accepted_without_interpretation():
+    assert normalise_typed_id("Xbox_2535123456789") == ("Xbox_2535123456789", None)
+
+
+def test_a_bare_steam_id_is_refused_as_ambiguous():
+    """The F2 panel is the authoritative source; a bare number could be anything."""
+    file_id, refusal = normalise_typed_id("76561198086248026")
+    assert file_id is None
+    assert "V_76561198086248026" in refusal
+
+
+def test_an_empty_entry_is_refused():
+    file_id, refusal = normalise_typed_id("   ")
+    assert file_id is None
+    assert refusal
+
+
+def test_an_id_with_a_space_in_it_is_refused():
+    file_id, refusal = normalise_typed_id("V_765 611")
+    assert file_id is None
+    assert refusal
+
+
+def test_case_is_never_altered():
+    assert normalise_typed_id("v_76561198086248026") == ("v_76561198086248026", None)
