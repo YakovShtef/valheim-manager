@@ -494,13 +494,6 @@ def test_the_time_field_sits_inside_the_schedule_form(backups_client):
         (False, False),
     ],
 )
-# `create_app` is built fresh four times here (one per combination), and each build
-# re-decorates `_start_background_tasks`/`_stop_background_tasks` with the already
-# deprecated `on_event` FastAPI API -- the same pre-existing warning every other test
-# in this file already triggers once. Silenced here only so exercising the guard
-# four times over doesn't get counted as four times the (unrelated) technical debt;
-# it does not hide anything this test itself introduces.
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_the_backup_timer_and_the_player_watcher_start_independently(
     volume, env_file, fake_docker, backup_dir_present, players_dir_present
 ):
