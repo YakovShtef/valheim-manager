@@ -2159,19 +2159,28 @@ def create_app(
     @app.on_event("shutdown")
     async def _stop_background_tasks() -> None:
         backup_task = getattr(app.state, "backup_timer", None)
+        watcher_task = getattr(app.state, "player_watcher", None)
+        # Cancelled together before either is awaited, and the watcher's await lives
+        # in a `finally`: these two tasks are independent, so the backup task hitting
+        # something other than CancelledError on its way out must not be able to skip
+        # cancelling or awaiting the watcher (or the reverse). One task's shutdown may
+        # not block the other's.
         if backup_task is not None:
             backup_task.cancel()
-            # Awaited rather than left to be garbage collected, so a backup already in
-            # flight is given the chance to finish its rename instead of being
-            # abandoned halfway -- and so the shutdown log line means what it says.
-            with suppress(asyncio.CancelledError):
-                await backup_task
-
-        watcher_task = getattr(app.state, "player_watcher", None)
         if watcher_task is not None:
             watcher_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await watcher_task
+        try:
+            if backup_task is not None:
+                # Awaited rather than left to be garbage collected, so a backup
+                # already in flight is given the chance to finish its rename instead
+                # of being abandoned halfway -- and so the shutdown log line means
+                # what it says.
+                with suppress(asyncio.CancelledError):
+                    await backup_task
+        finally:
+            if watcher_task is not None:
+                with suppress(asyncio.CancelledError):
+                    await watcher_task
 
     return app
 
