@@ -21,6 +21,10 @@ from app.permission_lists import (
     PermissionLists,
 )
 
+POSIX_ONLY = pytest.mark.skipif(
+    os.name != "posix", reason="file modes are only meaningful on POSIX"
+)
+
 HEADER = "// List admin players ID  ONE per line"
 A = "V_76561198086248026"
 B = "V_76561198000000001"
@@ -75,6 +79,7 @@ def test_ids_are_case_sensitive(lists):
     assert lists.remove(ADMIN, A.lower()).ids == (A,)
 
 
+@POSIX_ONLY
 def test_the_file_is_written_group_writable(lists, tmp_path):
     """0664, or the game server -- a different uid in the same group -- loses write
     access to a file it owns."""
@@ -108,3 +113,33 @@ def test_parked_entries_round_trip(tmp_path):
 def test_an_unknown_list_kind_is_refused(lists):
     with pytest.raises(PermissionListError):
         lists.read("friends")
+
+
+def test_the_manager_asks_for_group_writable_modes_whatever_the_platform(
+    tmp_path, monkeypatch
+):
+    """The companion to test_the_file_is_written_group_writable, which cannot run on a
+    Windows checkout: whatever the filesystem then does with it, the manager has to
+    *ask* for a group-writable permission list on every file it writes.
+
+    Why group-write is the whole mechanism: the manager runs as uid 10001 in the game's
+    group (gid 1000) and cannot chown (cap_drop: [ALL] removes CAP_CHOWN), so after the
+    manager's first write the file is owned by 10001:1000 and the game server keeps write
+    access only through the group bit."""
+    import app.permission_lists as permission_lists_module
+
+    calls: list[tuple[str, int]] = []
+    real_chmod = permission_lists_module.os.chmod
+
+    def recording_chmod(path, mode, *args, **kwargs):
+        calls.append((str(path), mode))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(permission_lists_module.os, "chmod", recording_chmod)
+
+    lists = PermissionLists(tmp_path)
+    lists.add(ADMIN, A)
+
+    assert calls, "nothing had its mode set at all"
+    for path, mode in calls:
+        assert mode & stat.S_IWGRP, f"{path} was written without the group write bit"
