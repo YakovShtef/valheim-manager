@@ -150,11 +150,18 @@ def human_size(size: int) -> str:
     raise AssertionError  # pragma: no cover - the loop always returns
 
 
-def sanitised_name(raw: str, *, what: str = "world name") -> str:
+def sanitised_name(
+    raw: str, *, what: str = "world name", max_length: int = MAX_WORLD_NAME_LENGTH
+) -> str:
     """A single path segment, or ``WorldError`` naming what is wrong with it.
 
     This is the only door: a name reaches the filesystem, ``WORLD_NAME`` or an archive
     destination through here and nowhere else.
+
+    ``max_length`` is keyword-only with the world's cap as its default, so every
+    existing caller is unchanged. It exists because a backup's filename is a world's
+    name *plus* a prefix and a timestamp, and holding that to the world's cap refused
+    names this code had itself just written.
     """
     name = (raw or "").strip()
     if not name:
@@ -180,10 +187,8 @@ def sanitised_name(raw: str, *, what: str = "world name") -> str:
     # same directory and the collision check a lie.
     if name.endswith("."):
         raise WorldError(f"The {what} cannot end with a dot.")
-    if len(name) > MAX_WORLD_NAME_LENGTH:
-        raise WorldError(
-            f"The {what} must be at most {MAX_WORLD_NAME_LENGTH} characters."
-        )
+    if len(name) > max_length:
+        raise WorldError(f"The {what} must be at most {max_length} characters.")
     # Belt and braces: after the checks above this cannot differ, and if some future
     # edit lets it, the failure is a refusal rather than a write outside the volume.
     if name != os.path.basename(name):  # pragma: no cover - defensive

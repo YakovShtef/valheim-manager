@@ -24,6 +24,12 @@ const HTML = readFileSync(htmlPath, "utf8");
 const APP = readFileSync(appPath, "utf8");
 const CSS = readFileSync(cssPath, "utf8");
 
+// Every page built, so they can be closed at the end. A JSDOM window holds node's
+// event loop open for as long as anything in it has a live timer, and the dashboard
+// has one by design: the header clock ticks every 250ms for the life of the page.
+// Leaving ~20 windows open meant this process finished its work and then never
+// exited, so pytest killed it at its timeout -- once per test, 25 times.
+const PAGES = [];
 const PANELS = ["panel-console", "panel-settings", "panel-worlds", "panel-mods"];
 const SCROLL_HEIGHT = 9999;
 const CLIENT_HEIGHT = 300;
@@ -39,6 +45,7 @@ const SETTINGS_ROWS = [
 
 function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
   const dom = new JSDOM(html, { url: "http://localhost/", runScripts: "outside-only" });
+  PAGES.push(dom);
   const win = dom.window;
   const doc = win.document;
 
@@ -568,6 +575,98 @@ check("a_tab_pointing_at_a_missing_panel_does_not_kill_the_dashboard", () => {
   eq(p.shown(), ["panel-settings"], "the surviving tabs stopped working");
 });
 
+// ------------------------------------------------------- the backup schedule
+//
+// Three ways to say how often, two of which share a pair of radios and one of which
+// is a time on the clock. Which control is showing what is entirely runtime, and the
+// mode is the only thing that says which radio is right -- the interval alone cannot,
+// because a daily schedule still carries one.
+
+const SCHEDULE = (over = {}) => ({
+  enabled: true, mode: "interval", interval_hours: 24, daily_time: "03:00",
+  keep_per_world: 7, last_run_at: null, last_error: "", ...over,
+});
+
+// The backups card is fed by /api/backups, not by the status socket, so a schedule
+// reaches the panel through a refresh rather than through a push.
+const withSchedule = (schedule) => {
+  const p = makePage();
+  p.win.fetch = (path) => {
+    p.fetches.push(String(path));
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ schedule, backups: [], error: "", loaded_world: "Dedicated" }),
+    });
+  };
+  p.doc.getElementById("btn-backups-refresh").click();
+  return p;
+};
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+check("a_daily_schedule_selects_the_time_radio_and_shows_the_time", async () => {
+  const p = withSchedule(SCHEDULE({ mode: "daily", daily_time: "13:30" }));
+  await settled();
+  eq(p.doc.getElementById("backup-every-at").checked, true, "the 'every day at' radio");
+  eq(p.doc.getElementById("backup-daily-time").value, "13:30", "the time shown");
+  eq(p.doc.getElementById("backup-every-day").checked, false, "the 24h radio");
+  eq(p.doc.getElementById("backup-every-custom").checked, false, "the custom radio");
+});
+
+check("an_interval_schedule_leaves_the_time_radio_alone", async () => {
+  // The time is still carried while an interval is in force: switching to "every day
+  // at" and back has to find each setting where it was left.
+  const p = withSchedule(SCHEDULE({ interval_hours: 6, daily_time: "13:30" }));
+  await settled();
+  eq(p.doc.getElementById("backup-every-at").checked, false, "the 'every day at' radio");
+  eq(p.doc.getElementById("backup-every-custom").checked, true, "the custom radio");
+  eq(p.doc.getElementById("backup-daily-time").value, "13:30", "the unused time");
+});
+
+check("the_default_schedule_still_selects_the_first_radio", async () => {
+  const p = withSchedule(SCHEDULE({ interval_hours: 24 }));
+  await settled();
+  eq(p.doc.getElementById("backup-every-day").checked, true, "the 24h radio");
+  eq(p.doc.getElementById("backup-every-at").checked, false, "the 'every day at' radio");
+});
+
+check("touching_the_time_field_picks_that_mode", async () => {
+  // Setting the time is how most people will choose the mode, so it must not need
+  // the radio to be found first -- the same courtesy the hours field gets.
+  const p = makePage();
+  p.doc.getElementById("backup-daily-time").dispatchEvent(new p.win.Event("focus"));
+  eq(p.doc.getElementById("backup-every-at").checked, true, "the radio after focus");
+});
+
+check("turning_backups_off_disables_the_time_field", async () => {
+  const p = makePage();
+  const box = p.doc.getElementById("backup-enabled");
+  box.checked = false;
+  box.dispatchEvent(new p.win.Event("change"));
+  eq(p.doc.getElementById("backup-daily-time").disabled, true, "the time field");
+  eq(p.doc.getElementById("backup-every-at").disabled, true, "the time radio");
+});
+
+check("saving_posts_both_the_mode_and_the_time", async () => {
+  // A form's submit handler is bound to the form, and the button has to be inside it.
+  // This is the shape of the bug that left `Add mod` inert while 506 tests passed.
+  const p = makePage();
+  const sent = [];
+  p.win.fetch = (path, init) => {
+    sent.push({ path: String(path), body: JSON.parse((init && init.body) || "{}") });
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+  };
+  p.doc.getElementById("backup-daily-time").value = "01:30";
+  p.doc.getElementById("backup-every-at").checked = true;
+  p.doc.getElementById("backup-schedule-form")
+    .dispatchEvent(new p.win.Event("submit", { bubbles: true, cancelable: true }));
+  const post = sent.find((s) => s.path.indexOf("/api/backups/schedule") >= 0);
+  if (!post) { throw new Error("nothing was posted to the schedule endpoint"); }
+  eq(post.body.mode, "daily", "posted mode");
+  eq(post.body.daily_time, "01:30", "posted time");
+  eq(post.body.interval_hours, 24, "the interval carried alongside it");
+});
+
 // -------------------------------------------------------------------- runner
 
 const results = {};
@@ -580,3 +679,9 @@ for (const [name, fn] of Object.entries(cases)) {
   }
 }
 process.stdout.write(JSON.stringify(results, null, 2));
+
+// Close every window so their timers stop and node can exit on its own. Deliberately
+// not `process.exit()`: stdout is a pipe when pytest captures it, and exiting can
+// truncate a write that has not flushed -- which would turn this into a harness that
+// reports nothing instead of one that reports everything and hangs.
+for (const dom of PAGES) { dom.window.close(); }

@@ -100,6 +100,9 @@ from .backups import (
     MIN_KEEP,
     DEFAULT_INTERVAL_HOURS,
     DEFAULT_KEEP,
+    DEFAULT_DAILY_TIME,
+    MODE_DAILY,
+    MODE_INTERVAL,
 )
 from .state_store import ManagerState, StateStore, StateStoreError
 from .mods import (
@@ -770,6 +773,9 @@ def create_app(
                     "min_keep": MIN_KEEP,
                     "max_keep": MAX_KEEP,
                     "default_keep": DEFAULT_KEEP,
+                    "default_daily_time": DEFAULT_DAILY_TIME,
+                    "mode_interval": MODE_INTERVAL,
+                    "mode_daily": MODE_DAILY,
                 },
                 "worlds_dir": str(world_store.root),
                 "mod_upload_max_human": human_size(mod_store.max_upload_bytes),

@@ -30,15 +30,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import zipfile
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .state_store import fsync_directory
 from .worlds import (
     BACKUP_PREFIX,
+    MAX_WORLD_NAME_LENGTH,
     SCHEDULED_PREFIX,
     World,
     WorldError,
@@ -61,6 +64,20 @@ KIND_GAME = "game"
 
 _PREFIXES = {BACKUP_PREFIX: KIND_MANUAL, SCHEDULED_PREFIX: KIND_SCHEDULED}
 
+# What `WorldStore._free_backup_path` appends to a world's name: `-YYYYmmdd-HHMMSS`,
+# and a counter when two backups land inside one second. Anchored to the end so only
+# the stamp can be taken off, however the world itself is spelled.
+_STAMPED_RE = re.compile(r"^(?P<world>.+)-\d{8}-\d{6}(?:-\d+)?$")
+
+# The longest name this module can be asked about is one it wrote itself: the longer
+# prefix, a full-length world, the stamp and a counter. Derived rather than written
+# out, so it cannot drift if the world-name cap moves. An archive is not a world and
+# does not get the world's cap: doing that refused names the manager had just
+# composed, which made those backups impossible to delete or restore.
+MAX_ARCHIVE_NAME_LENGTH = (
+    len(SCHEDULED_PREFIX) + MAX_WORLD_NAME_LENGTH + len("-YYYYmmdd-HHMMSS") + len("-999")
+)
+
 # Retention and interval bounds. The floor on the interval is not arbitrary: below an
 # hour the timer writes faster than the game's own hourly backup while shrinking the
 # history that `keep` buys to a handful of hours, which is the opposite of the point.
@@ -70,6 +87,53 @@ DEFAULT_INTERVAL_HOURS = 24
 MIN_KEEP = 1
 MAX_KEEP = 200
 DEFAULT_KEEP = 7
+
+# How the timer decides it is owed a backup. `interval` counts hours from the last
+# run; `daily` waits for a time on the clock. Both are kept on the schedule at once,
+# so switching between them and back finds the other setting where it was left.
+MODE_INTERVAL = "interval"
+MODE_DAILY = "daily"
+_MODES = frozenset({MODE_INTERVAL, MODE_DAILY})
+
+# Early enough that nobody is playing, late enough that a machine asleep overnight
+# still reaches it before morning.
+DEFAULT_DAILY_TIME = "03:00"
+
+# `H:MM` as well as `HH:MM`: a browser's time field always sends two digits, but the
+# API is reachable without one and `1:30` is what a person types.
+_DAILY_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def parse_daily_time(raw: Any) -> str | None:
+    """``"1:30"`` -> ``"01:30"``, or ``None`` when it is not a time of day.
+
+    One stored spelling per time, so what the panel shows back is what the timer will
+    actually do rather than a second way of writing it.
+    """
+    if not isinstance(raw, str):
+        return None
+    match = _DAILY_TIME_RE.match(raw.strip())
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _next_daily(after: float, daily_time: str) -> float:
+    """The first ``daily_time`` strictly after ``after``, on the wall clock.
+
+    Calendar arithmetic rather than ``after + 86400``: the point of the mode is that
+    it keeps the time somebody chose, and a day is not always 86400 seconds. Adding a
+    day to the *date* holds 13:30 at 13:30 across a DST change.
+    """
+    hour, minute = (int(part) for part in daily_time.split(":"))
+    moment = datetime.fromtimestamp(after)
+    candidate = moment.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= moment:
+        candidate += timedelta(days=1)
+    return candidate.timestamp()
 
 # How often the timer wakes to ask whether it is due. Coarse on purpose: the question
 # is cheap, the answer is almost always no, and a wake-up this frequent means a
@@ -125,7 +189,11 @@ class BackupSchedule:
     """The backup timer's settings, as stored and as the panel edits them."""
 
     enabled: bool = True
+    # `interval` or `daily`. Both settings below are kept whichever is in force, so
+    # switching to the other and back does not lose the one you had.
+    mode: str = MODE_INTERVAL
     interval_hours: int = DEFAULT_INTERVAL_HOURS
+    daily_time: str = DEFAULT_DAILY_TIME
     keep_per_world: int = DEFAULT_KEEP
     # When the timer last completed a backup, as an epoch. Persisted so restarting
     # the manager neither restarts the clock nor fires a backup on every boot -- with
@@ -146,6 +214,12 @@ class BackupSchedule:
             # Never run: due now. A fresh install gets one backup immediately rather
             # than nothing at all for the first interval.
             return 0.0
+        if self.mode == MODE_DAILY:
+            # A due time already past -- the manager was down at 13:30, or the world
+            # was not loaded -- stays in the past, so the next tick takes it late
+            # rather than skipping the day. `last_run_at` then moves, so a machine
+            # that restarts five times in an hour still gets one backup.
+            return _next_daily(self.last_run_at, self.daily_time)
         return self.last_run_at + self.interval_hours * 3600
 
 
@@ -165,9 +239,16 @@ def schedule_from_payload(payload: dict[str, Any], current: BackupSchedule) -> B
     the same response, so the panel shows what was actually stored.
     """
     enabled = payload.get("enabled", current.enabled)
+    mode = payload.get("mode", current.mode)
+    # An unreadable time keeps the stored one, for the same reason the numbers are
+    # clamped: the panel must not be able to fail a save, and what it shows afterwards
+    # is what was actually kept.
+    daily_time = parse_daily_time(payload.get("daily_time", current.daily_time))
     return replace(
         current,
         enabled=bool(enabled),
+        mode=mode if mode in _MODES else current.mode,
+        daily_time=daily_time or current.daily_time,
         interval_hours=_clamp(
             payload.get("interval_hours", current.interval_hours),
             MIN_INTERVAL_HOURS,
@@ -222,8 +303,13 @@ class ScheduleStore:
             last_run = float(last_run) if last_run is not None else None
         except (TypeError, ValueError):
             last_run = None
+        # A file written before the daily mode existed carries neither key, and reads
+        # back as the interval schedule it was. There is nothing to migrate.
+        mode = raw.get("mode")
         return BackupSchedule(
             enabled=bool(raw.get("enabled", True)),
+            mode=mode if mode in _MODES else MODE_INTERVAL,
+            daily_time=parse_daily_time(raw.get("daily_time")) or DEFAULT_DAILY_TIME,
             interval_hours=_clamp(
                 raw.get("interval_hours"), MIN_INTERVAL_HOURS, MAX_INTERVAL_HOURS, DEFAULT_INTERVAL_HOURS
             ),
@@ -339,15 +425,14 @@ class BackupStore:
                     if stem.lower().endswith(suffix):
                         stem = stem[: -len(suffix)]
                 # `<world>-<stamp>` or `<world>-<stamp>-<n>`, where the stamp is
-                # `YYYYmmdd-HHMMSS`. Trailing all-digit groups are peeled off one at a
-                # time rather than a fixed two, because the duplicate-second counter
-                # adds a third -- and a world may itself contain dashes, so the split
-                # has to work from the right. The `len > 1` guard is what keeps a world
-                # actually named `2024` from being peeled down to nothing.
-                parts = stem.split("-")
-                while len(parts) > 1 and parts[-1].isdigit():
-                    parts.pop()
-                return kind, "-".join(parts)
+                # `YYYYmmdd-HHMMSS`. Matched as that exact shape rather than by peeling
+                # trailing numbers off: a world may end in one of its own -- `Base-2`,
+                # `Fjord-2024` -- and peeling took those with it, which left retention
+                # unable to recognise the world it had just backed up and restore
+                # landing under a name the server does not load. The world part is
+                # greedy, so a world that itself looks like a stamp keeps it.
+                match = _STAMPED_RE.match(stem)
+                return kind, match.group("world") if match else stem
         return KIND_GAME, ""
 
     def find(self, name: str) -> BackupEntry | None:
@@ -501,7 +586,14 @@ class BackupStore:
 
         Reuses the world-name rule rather than inventing a second one, then allows the
         dot an archive's extension needs. ``sanitised_name`` is what refuses ``..``,
-        a slash, a backslash and a leading dash.
+        a slash, a backslash and a leading dash. It is given the archive cap, not the
+        world's: an archive's name is a world's name plus a prefix and a stamp, so the
+        world's cap refused names this module had itself written -- and every backup
+        of a long-named world became impossible to delete or restore.
+
+        Whatever it refuses is re-raised as ``BackupError``. The routes here catch that
+        and nothing else, so a ``WorldError`` reaching them is a 500 rather than a
+        sentence the operator can act on.
         """
         candidate = (raw or "").strip()
         if not candidate:
@@ -511,7 +603,10 @@ class BackupStore:
             raise BackupError(f"{candidate!r} is not a backup file name.")
         if extension.lower() not in {"zip", "db", "fwl", "tgz", "gz"}:
             raise BackupError(f"{candidate!r} is not a backup file name.")
-        sanitised_name(stem, what="backup name")
+        try:
+            sanitised_name(stem, what="backup name", max_length=MAX_ARCHIVE_NAME_LENGTH)
+        except WorldError as exc:
+            raise BackupError(str(exc)) from exc
         return candidate
 
     def _resolved(self, name: str) -> Path:

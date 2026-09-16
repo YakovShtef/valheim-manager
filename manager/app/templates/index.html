@@ -383,9 +383,18 @@
                  aria-label="Hours between backups">
           hours
         </label>
+        <label class="radio">
+          <input type="radio" name="backup-interval-mode" id="backup-every-at"
+                 value="at">
+          Every day at
+          <input type="time" id="backup-daily-time"
+                 value="{{ backup_limits.default_daily_time }}"
+                 aria-label="Time of day to back up">
+        </label>
         <p class="muted small">
           Anything from {{ backup_limits.min_interval_hours }} hour to
-          {{ backup_limits.max_interval_hours }} hours.
+          {{ backup_limits.max_interval_hours }} hours, or a time on your server's
+          own clock.
         </p>
 
         <label for="backup-keep">Backups to keep, per world</label>

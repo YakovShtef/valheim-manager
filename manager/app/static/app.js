@@ -75,7 +75,9 @@
     backupIntervalFields: document.getElementById("backup-interval-fields"),
     backupEveryDay: document.getElementById("backup-every-day"),
     backupEveryCustom: document.getElementById("backup-every-custom"),
+    backupEveryAt: document.getElementById("backup-every-at"),
     backupIntervalHours: document.getElementById("backup-interval-hours"),
+    backupDailyTime: document.getElementById("backup-daily-time"),
     backupKeep: document.getElementById("backup-keep"),
     backupScheduleNote: document.getElementById("backup-schedule-note"),
     backupScheduleSave: document.getElementById("btn-backup-schedule-save"),
@@ -539,9 +541,16 @@
     el.backupEnabled.checked = !!schedule.enabled;
     var hours = Number(schedule.interval_hours) || backupLimit("default_interval_hours", 24);
     var isDefault = hours === backupLimit("default_interval_hours", 24);
-    el.backupEveryDay.checked = isDefault;
-    el.backupEveryCustom.checked = !isDefault;
+    // The mode decides which radio is on; the interval only decides which of the two
+    // interval radios it is. Both settings are carried whichever is in force, so
+    // switching away and back finds the other where it was left.
+    var daily = schedule.mode === backupLimit("mode_daily", "daily");
+    el.backupEveryAt.checked = daily;
+    el.backupEveryDay.checked = !daily && isDefault;
+    el.backupEveryCustom.checked = !daily && !isDefault;
     el.backupIntervalHours.value = hours;
+    el.backupDailyTime.value = schedule.daily_time ||
+      backupLimit("default_daily_time", "03:00");
     el.backupKeep.value = Number(schedule.keep_per_world) || backupLimit("default_keep", 7);
     syncScheduleControls();
 
@@ -566,11 +575,14 @@
     var on = el.backupEnabled.checked;
     el.backupScheduleForm.classList.toggle("is-off", !on);
     el.backupIntervalFields.classList.toggle("is-default", el.backupEveryDay.checked);
+    el.backupIntervalFields.classList.toggle("is-daily", el.backupEveryAt.checked);
     // Disabled rather than hidden: the value still says what would happen, and a
     // hidden control that reappears where you were not looking is worse.
     el.backupEveryDay.disabled = !on;
     el.backupEveryCustom.disabled = !on;
+    el.backupEveryAt.disabled = !on;
     el.backupIntervalHours.disabled = !on;
+    el.backupDailyTime.disabled = !on;
     el.backupKeep.disabled = !on;
   }
 
@@ -682,13 +694,26 @@
       default_interval_hours: Number(el.backupIntervalHours.getAttribute("value")) || 24,
       min_keep: Number(el.backupKeep.getAttribute("min")) || 1,
       max_keep: Number(el.backupKeep.getAttribute("max")) || 200,
-      default_keep: Number(el.backupKeep.getAttribute("value")) || 7
+      default_keep: Number(el.backupKeep.getAttribute("value")) || 7,
+      // Read off the rendered control rather than repeated here, so the default
+      // cannot drift from the one the manager actually stores.
+      default_daily_time: el.backupDailyTime.getAttribute("value") || "03:00"
     };
 
     el.backupsRefresh.addEventListener("click", refreshBackups);
     el.backupEnabled.addEventListener("change", syncScheduleControls);
     el.backupEveryDay.addEventListener("change", syncScheduleControls);
     el.backupEveryCustom.addEventListener("change", syncScheduleControls);
+    el.backupEveryAt.addEventListener("change", syncScheduleControls);
+    // Setting the time is how most people will pick "every day at", so treat it as
+    // that rather than making them find the radio first -- the same courtesy the
+    // hours field gets below.
+    el.backupDailyTime.addEventListener("focus", function () {
+      if (!el.backupDailyTime.disabled) {
+        el.backupEveryAt.checked = true;
+        syncScheduleControls();
+      }
+    });
     // Typing in the field is how most people will pick "custom", so treat it as that
     // rather than making them find the radio first.
     el.backupIntervalHours.addEventListener("focus", function () {
@@ -703,9 +728,15 @@
       var hours = el.backupEveryDay.checked
         ? backupLimit("default_interval_hours", 24)
         : Number(el.backupIntervalHours.value);
+      // Both settings go every time, whichever radio is on: the manager keeps the
+      // one not in force so switching modes and back does not lose it.
       backupAction("/api/backups/schedule", {
         enabled: el.backupEnabled.checked,
+        mode: el.backupEveryAt.checked
+          ? backupLimit("mode_daily", "daily")
+          : backupLimit("mode_interval", "interval"),
         interval_hours: hours,
+        daily_time: el.backupDailyTime.value,
         keep_per_world: Number(el.backupKeep.value)
       });
     });

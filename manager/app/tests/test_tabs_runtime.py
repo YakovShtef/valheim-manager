@@ -71,6 +71,12 @@ CASES = [
     "a_panel_error_survives_a_switch_and_is_marked_in_the_strip",
     "an_upload_in_flight_is_marked_in_the_strip",
     "a_tab_pointing_at_a_missing_panel_does_not_kill_the_dashboard",
+    "a_daily_schedule_selects_the_time_radio_and_shows_the_time",
+    "an_interval_schedule_leaves_the_time_radio_alone",
+    "the_default_schedule_still_selects_the_first_radio",
+    "touching_the_time_field_picks_that_mode",
+    "turning_backups_off_disables_the_time_field",
+    "saving_posts_both_the_mode_and_the_time",
 ]
 
 SETUP = (
