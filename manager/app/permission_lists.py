@@ -1,0 +1,172 @@
+"""The three permission files at the root of the /config volume.
+
+    adminlist.txt      -- who may use in-game admin commands
+    bannedlist.txt     -- who may not join
+    permittedlist.txt  -- a WHITELIST: non-empty means only these may join
+
+The manager is a second writer on files the game server owns, which sets two rules.
+Comments are preserved verbatim -- the game ships a header line in each file, and a
+rewrite that dropped what it could not parse would eat it. And the file is written
+mode 0664: the manager runs as uid 10001 in the game's group (gid 1000), so after the
+first manager write the file is owned by 10001:1000 and the game server keeps write
+access only through the group bit.
+
+Writes are temp-file-plus-os.replace, the same as ``settings_store``. /config is mode
+775 group 1000 on the deployment this was built for, so the manager can create a temp
+file there; atomicity matters because the reader is a live game server that must
+never see a truncated list.
+
+``parked`` entries -- lines of the form ``// disabled-by-manager <id>`` -- are how the
+whitelist is switched off without losing its contents. They are comments to the game,
+so it ignores them, and the manager can put them back.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+from .state_store import fsync_directory
+
+log = logging.getLogger(__name__)
+
+ADMIN = "admin"
+BANNED = "banned"
+PERMITTED = "permitted"
+
+LIST_FILENAMES = {
+    ADMIN: "adminlist.txt",
+    BANNED: "bannedlist.txt",
+    PERMITTED: "permittedlist.txt",
+}
+
+LIST_MODE = 0o664
+
+_PARKED_RE = re.compile(r"^//\s*disabled-by-manager\s+(\S+)\s*$")
+
+
+class PermissionListError(Exception):
+    """Raised with text meant to be shown to the operator as-is."""
+
+
+@dataclass(frozen=True)
+class ListFile:
+    kind: str
+    ids: tuple[str, ...]
+    comments: tuple[str, ...]
+    parked: tuple[str, ...]
+
+
+def parse_list_text(kind: str, text: str) -> ListFile:
+    comments: list[str] = []
+    ids: list[str] = []
+    parked: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parked_match = _PARKED_RE.match(line)
+        if parked_match:
+            parked.append(parked_match.group(1))
+            continue
+        if line.startswith("//"):
+            comments.append(line)
+            continue
+        ids.append(line)
+    return ListFile(kind=kind, ids=tuple(ids), comments=tuple(comments), parked=tuple(parked))
+
+
+def render_list_text(entry: ListFile) -> str:
+    lines = [*entry.comments]
+    lines.extend(f"// disabled-by-manager {pid}" for pid in entry.parked)
+    lines.extend(entry.ids)
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+class PermissionLists:
+    """Reads and atomically writes the three files."""
+
+    def __init__(self, config_dir: str | os.PathLike[str]):
+        self.config_dir = Path(config_dir)
+
+    def path_for(self, kind: str) -> Path:
+        try:
+            return self.config_dir / LIST_FILENAMES[kind]
+        except KeyError:
+            raise PermissionListError(f"There is no {kind!r} list.") from None
+
+    def read(self, kind: str) -> ListFile:
+        path = self.path_for(kind)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # The game creates these on first start. Before that, an empty list is
+            # the honest answer, not an error.
+            return ListFile(kind=kind, ids=(), comments=(), parked=())
+        except OSError as exc:
+            raise PermissionListError(
+                f"Could not read {path}: {exc}. It must be readable by the manager's uid."
+            ) from exc
+        return parse_list_text(kind, text)
+
+    def write(self, kind: str, ids: Sequence[str], *, parked: Sequence[str] = ()) -> ListFile:
+        path = self.path_for(kind)
+        current = self.read(kind)
+        entry = ListFile(
+            kind=kind, ids=tuple(ids), comments=current.comments, parked=tuple(parked)
+        )
+        parent = path.parent
+        try:
+            fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=".valheim-list-", suffix=".tmp")
+        except OSError as exc:
+            raise PermissionListError(
+                f"Could not write to {parent}: {exc}. The manager's uid needs write "
+                "access to the game's config volume."
+            ) from exc
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(render_list_text(entry))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_name, LIST_MODE)
+            os.replace(tmp_name, path)
+            fsync_directory(parent)
+        except OSError as exc:
+            try:
+                os.unlink(tmp_name)
+            except OSError:  # pragma: no cover - already gone
+                pass
+            raise PermissionListError(f"Could not write {path}: {exc}") from exc
+        return entry
+
+    def add(self, kind: str, file_id: str) -> ListFile:
+        current = self.read(kind)
+        if file_id in current.ids:
+            return current
+        return self.write(kind, (*current.ids, file_id), parked=current.parked)
+
+    def remove(self, kind: str, file_id: str) -> ListFile:
+        current = self.read(kind)
+        if file_id not in current.ids:
+            return current
+        kept = tuple(pid for pid in current.ids if pid != file_id)
+        return self.write(kind, kept, parked=current.parked)
+
+
+__all__ = [
+    "ADMIN",
+    "BANNED",
+    "LIST_FILENAMES",
+    "LIST_MODE",
+    "PERMITTED",
+    "ListFile",
+    "PermissionListError",
+    "PermissionLists",
+    "parse_list_text",
+    "render_list_text",
+]
