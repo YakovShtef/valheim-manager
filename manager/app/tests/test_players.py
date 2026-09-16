@@ -8,6 +8,7 @@ the table and the raw editors two copies of one fact and let them drift.
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 from app.player_log import PlayerUpdate
 from app.players import Player, PlayerStore
@@ -84,3 +85,25 @@ def test_the_file_is_json_keyed_by_platform_id(tmp_path):
     path = tmp_path / "players.json"
     PlayerStore(path).apply([update(epoch=100.0)], world="Midgard")
     assert list(json.loads(path.read_text(encoding="utf-8"))) == [A]
+
+
+def test_save_handles_mkstemp_failure_gracefully(tmp_path, caplog):
+    """A failure to create the temp file is logged and does not raise."""
+    store = PlayerStore(tmp_path / "players.json")
+    players = {A: Player(
+        platform_id=A,
+        platform="steam",
+        name="Loped",
+        first_seen=100.0,
+        last_seen=100.0,
+        last_world="Midgard",
+    )}
+
+    # Monkeypatch tempfile.mkstemp to raise OSError
+    with patch("tempfile.mkstemp", side_effect=OSError("Permission denied")):
+        # This should not raise; it should log and return
+        store.save(players)
+
+    # Verify the warning was logged
+    assert "Could not write the roster" in caplog.text
+    assert "Permission denied" in caplog.text
