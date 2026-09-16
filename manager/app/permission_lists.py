@@ -158,15 +158,72 @@ class PermissionLists:
         return self.write(kind, kept, parked=current.parked)
 
 
+# Valheim 1.0 addresses players as [Platform]_[UserID], case-sensitive. For Steam the
+# working form is "V_" plus the SteamID64 -- established by community-valheim-tools
+# issue #798 and by the in-game F2 panel, NOT by the files, whose header comments
+# document no format at all. Treated as probable rather than proven: see the spec.
+STEAM_FILE_PREFIX = "V_"
+
+_PLATFORM_PREFIXES = {"steam": STEAM_FILE_PREFIX}
+_PREFIXED_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*_\S+$")
+_BARE_STEAM_RE = re.compile(r"^\d{17}$")
+
+
+def to_file_id(platform_id: str, platform: str) -> str | None:
+    """A platform id as logged, in the form the list files want, or ``None``.
+
+    ``None`` means "this cannot be converted safely" -- the caller shows the row as
+    needing its id rather than writing a guess. An invented prefix would produce a
+    line the game accepts and silently ignores, which is the worst failure available:
+    the operator sees the id in the file and believes it took effect.
+    """
+    value = platform_id.strip()
+    if not value:
+        return None
+    if _PREFIXED_RE.match(value):
+        return value
+    prefix = _PLATFORM_PREFIXES.get(platform)
+    if prefix is None:
+        return None
+    return f"{prefix}{value}"
+
+
+def normalise_typed_id(text: str) -> tuple[str | None, str | None]:
+    """What the operator typed, as a file id -- or a refusal to show them.
+
+    Exactly one of the two is non-``None``. Case is never altered: these ids are
+    case-sensitive, so "correcting" one would break it.
+    """
+    value = text.strip()
+    if not value:
+        return None, "Enter a player ID."
+    if _BARE_STEAM_RE.match(value):
+        return None, (
+            f"That looks like a bare SteamID64. Valheim wants the platform form -- "
+            f"probably {STEAM_FILE_PREFIX}{value}. The exact value is shown in the "
+            "in-game F2 panel; paste it from there."
+        )
+    if not _PREFIXED_RE.match(value):
+        return None, (
+            "A player ID looks like Platform_UserID, for example "
+            f"{STEAM_FILE_PREFIX}76561198012345678. You can copy yours from the "
+            "in-game F2 panel."
+        )
+    return value, None
+
+
 __all__ = [
     "ADMIN",
     "BANNED",
     "LIST_FILENAMES",
     "LIST_MODE",
     "PERMITTED",
+    "STEAM_FILE_PREFIX",
     "ListFile",
     "PermissionListError",
     "PermissionLists",
+    "normalise_typed_id",
     "parse_list_text",
     "render_list_text",
+    "to_file_id",
 ]
