@@ -480,3 +480,68 @@ def test_the_time_field_sits_inside_the_schedule_form(backups_client):
     form_end = page.index("</form>", form_start)
 
     assert form_start < page.index('id="backup-daily-time"') < form_end
+
+
+# ----------------------------------------- backup timer / player watcher independence
+
+
+@pytest.mark.parametrize(
+    "backup_dir_present, players_dir_present",
+    [
+        (True, True),
+        (True, False),
+        (False, True),
+        (False, False),
+    ],
+)
+# `create_app` is built fresh four times here (one per combination), and each build
+# re-decorates `_start_background_tasks`/`_stop_background_tasks` with the already
+# deprecated `on_event` FastAPI API -- the same pre-existing warning every other test
+# in this file already triggers once. Silenced here only so exercising the guard
+# four times over doesn't get counted as four times the (unrelated) technical debt;
+# it does not hide anything this test itself introduces.
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_the_backup_timer_and_the_player_watcher_start_independently(
+    volume, env_file, fake_docker, backup_dir_present, players_dir_present
+):
+    """Each background task is gated by its own state directory, never the other's.
+
+    Both tasks now share one ``@app.on_event("startup")``/``"shutdown")`` pair
+    instead of a pair each -- done to avoid doubling FastAPI's ``on_event``
+    deprecation warning across the suite, since it fires at decoration time, once
+    per ``create_app()`` call, not once per process. Nothing else forces that
+    sharing to keep the two tasks independent, so this pins it: a future edit that
+    reintroduces an early ``return`` after the first guard -- the shape a careless
+    merge takes -- would silently skip the second task whenever the first one's
+    directory is missing, and the suite would stay green. The case that would catch
+    it: the backup-schedule directory is ABSENT and the players directory is
+    PRESENT -- the watcher must still start.
+    """
+    backup_dir = volume / ("backup_state" if backup_dir_present else "no_such_backup_state")
+    players_dir = volume / ("players_state" if players_dir_present else "no_such_players_state")
+    if backup_dir_present:
+        backup_dir.mkdir()
+        # Disabled, like `backups_client` above: enabled is due immediately on a
+        # first run, and this test only cares whether the task was created.
+        (backup_dir / "backup-schedule.json").write_text(
+            json.dumps({"enabled": False}), encoding="utf-8"
+        )
+    if players_dir_present:
+        players_dir.mkdir()
+
+    config = build_config(
+        env_file,
+        worlds_dir=str(volume / "worlds_local"),
+        backups_dir=str(volume / "backups"),
+        backup_schedule_file=str(backup_dir / "backup-schedule.json"),
+        players_file=str(players_dir / "players.json"),
+    )
+    control = build_control(config, fake_docker)
+    app = create_app(config=config, controller=control, settings=SettingsStore(env_file))
+
+    with TestClient(app):
+        backup_started = app.state.backup_timer is not None
+        watcher_started = app.state.player_watcher is not None
+
+    assert backup_started is backup_dir_present
+    assert watcher_started is players_dir_present
