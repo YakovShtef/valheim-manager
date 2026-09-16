@@ -79,4 +79,61 @@ def parse_line(line: LogLine) -> PlayerEvent | None:
     return None
 
 
-__all__ = ["JoinEvent", "LeaveEvent", "NameEvent", "PlayerEvent", "STEAM", "UNKNOWN", "parse_line"]
+@dataclass(frozen=True)
+class PlayerUpdate:
+    """One thing learned about one player, ready for the store to fold in."""
+
+    platform_id: str
+    platform: str
+    epoch: float
+    name: str | None
+
+
+class SessionTracker:
+    """Who is connected right now, so a nameless name line can find its owner.
+
+    The name line carries no platform id, so ownership is inferred from connection
+    state. The inference is deliberately conservative: when it cannot be certain, it
+    attaches the name to nobody and the row keeps showing the id until a session in
+    which that player is alone.
+    """
+
+    def __init__(self) -> None:
+        # platform id -> the name we have for them this session, or None.
+        self.connected: dict[str, str | None] = {}
+        self._platforms: dict[str, str] = {}
+
+    def apply(self, event: PlayerEvent) -> PlayerUpdate | None:
+        if isinstance(event, JoinEvent):
+            self.connected[event.platform_id] = None
+            self._platforms[event.platform_id] = event.platform
+            return PlayerUpdate(event.platform_id, event.platform, event.epoch, None)
+
+        if isinstance(event, LeaveEvent):
+            self.connected.pop(event.platform_id, None)
+            # Still a sighting: backfill can begin mid-session, so a leave may be the
+            # first and only thing the log tells us about this player.
+            return PlayerUpdate(event.platform_id, event.platform, event.epoch, None)
+
+        owner = self._owner_of_a_name()
+        if owner is None:
+            return None
+        self.connected[owner] = event.name
+        return PlayerUpdate(owner, self._platforms.get(owner, UNKNOWN), event.epoch, event.name)
+
+    def _owner_of_a_name(self) -> str | None:
+        """The one player a name can safely belong to, or ``None``.
+
+        One connected player: it is theirs, named already or not -- that covers the
+        respawn case, where the line fires again for someone who already has a name.
+        Several connected: only if exactly one of them is still unnamed.
+        """
+        if len(self.connected) == 1:
+            return next(iter(self.connected))
+        unnamed = [pid for pid, name in self.connected.items() if name is None]
+        if len(unnamed) == 1:
+            return unnamed[0]
+        return None
+
+
+__all__ = ["JoinEvent", "LeaveEvent", "NameEvent", "PlayerEvent", "STEAM", "UNKNOWN", "parse_line", "PlayerUpdate", "SessionTracker"]
