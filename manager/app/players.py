@@ -125,7 +125,11 @@ class PlayerStore:
             indent=2,
             sort_keys=True,
         )
-        fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=".players-", suffix=".tmp")
+        try:
+            fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=".players-", suffix=".tmp")
+        except OSError as exc:
+            log.warning("Could not write the roster at %s: %s", self.path, exc)
+            return
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload)
