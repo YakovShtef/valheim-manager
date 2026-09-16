@@ -60,6 +60,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from .auth import LOGIN_ERROR, AuthConfigError, SessionAuth
 from .docker_control import DockerControl, DockerControlError
+from .player_log import SessionTracker
+from .players import WATCH_INTERVAL_SECONDS, PlayerStore, harvest_players
 from .modifiers import (
     CATEGORIES as MODIFIER_CATEGORIES,
     FIELD_KEYS as MODIFIER_FIELD_KEYS,
@@ -280,6 +282,9 @@ class AppConfig:
     # holds the admin hash and the session secret, and a backup interval has no
     # business sharing a document whose only job is credentials.
     backup_schedule_file: str = "/srv/state/backup-schedule.json"
+    # Beside the other two on the same manager-owned volume, for the same reason: the
+    # roster is not a secret and has no business sharing a document with ones that are.
+    players_file: str = "/srv/state/players.json"
     # Only used to print a clickable setup URL; the manager never calls itself.
     manager_url: str = ""
     restart_policy: str = "unless-stopped"
@@ -335,6 +340,7 @@ def config_from_env() -> AppConfig:
         backup_schedule_file=os.environ.get(
             "BACKUP_SCHEDULE_FILE", AppConfig.backup_schedule_file
         ),
+        players_file=os.environ.get("PLAYERS_FILE", AppConfig.players_file),
         manager_url=os.environ.get("MANAGER_URL", "").strip(),
         restart_policy=os.environ.get("VALHEIM_RESTART_POLICY", "unless-stopped"),
         stop_timeout=_env_int("VALHEIM_STOP_TIMEOUT", 120, minimum=1),
@@ -2091,8 +2097,32 @@ def create_app(
                 log.exception("The backup timer hit an unexpected error; continuing.")
                 await asyncio.sleep(TICK_SECONDS)
 
+    async def _player_watcher() -> None:
+        """Backfill the whole current container log, then poll.
+
+        Backfill first because the roster must survive the manager being down; it is
+        safe to run unconditionally because the upsert is idempotent on platform id.
+        The gap it cannot close is a join that happened while the manager was down AND
+        before a `docker rm` -- removing a container destroys its log, and no design
+        recovers that.
+        """
+        player_store = PlayerStore(config.players_file)
+        tracker = SessionTracker()
+        since = 0.0
+        while True:
+            world = _loaded_world() or None
+            since = await asyncio.to_thread(
+                harvest_players, control, tracker, player_store, since=since, world=world
+            )
+            await asyncio.sleep(WATCH_INTERVAL_SECONDS)
+
+    # Both background tasks share one startup/shutdown pair rather than each getting
+    # its own: `@app.on_event(...)` warns at decoration time (not when the event
+    # actually fires), so every extra pair multiplies that warning across every test
+    # in the suite that calls `create_app`. Folding the player watcher in here keeps
+    # that count where it was instead of doubling it for two lines of wiring.
     @app.on_event("startup")
-    async def _start_backup_timer() -> None:
+    async def _start_background_tasks() -> None:
         # The timer only runs where its state directory already exists, and that
         # condition is doing real work rather than being defensive. In the container
         # /srv/state is a mounted volume and is always there. Everywhere else -- a
@@ -2108,20 +2138,40 @@ def create_app(
                 state_dir,
             )
             app.state.backup_timer = None
-            return
-        app.state.backup_timer = asyncio.create_task(_backup_timer())
+        else:
+            app.state.backup_timer = asyncio.create_task(_backup_timer())
+
+        # Same guard as the backup timer: only run where the state directory already
+        # exists. In the container /srv/state is a mounted volume; in a checkout
+        # running the suite it is not, and a background task that starts writing files
+        # merely because create_app was imported is not something an app should do.
+        players_dir = Path(config.players_file).parent
+        if not players_dir.is_dir():
+            log.info(
+                "Player roster not started: %s does not exist, so there is nowhere to "
+                "record who has joined.",
+                players_dir,
+            )
+            app.state.player_watcher = None
+        else:
+            app.state.player_watcher = asyncio.create_task(_player_watcher())
 
     @app.on_event("shutdown")
-    async def _stop_backup_timer() -> None:
-        task = getattr(app.state, "backup_timer", None)
-        if task is None:
-            return
-        task.cancel()
-        # Awaited rather than left to be garbage collected, so a backup already in
-        # flight is given the chance to finish its rename instead of being abandoned
-        # halfway -- and so the shutdown log line means what it says.
-        with suppress(asyncio.CancelledError):
-            await task
+    async def _stop_background_tasks() -> None:
+        backup_task = getattr(app.state, "backup_timer", None)
+        if backup_task is not None:
+            backup_task.cancel()
+            # Awaited rather than left to be garbage collected, so a backup already in
+            # flight is given the chance to finish its rename instead of being
+            # abandoned halfway -- and so the shutdown log line means what it says.
+            with suppress(asyncio.CancelledError):
+                await backup_task
+
+        watcher_task = getattr(app.state, "player_watcher", None)
+        if watcher_task is not None:
+            watcher_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher_task
 
     return app
 
