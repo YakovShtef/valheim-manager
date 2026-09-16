@@ -10,10 +10,14 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from app.player_log import PlayerUpdate
-from app.players import Player, PlayerStore
+from app.docker_control import DockerControlError, LogLine
+from app.player_log import PlayerUpdate, SessionTracker
+from app.players import WATCH_INTERVAL_SECONDS, Player, PlayerStore, harvest_players
 
 A = "76561198086248026"
+
+JOIN_MSG = "supervisord: valheim-server 09/16/2026 07:45:28: Got connection SteamID 76561198086248026"
+NAME_MSG = "supervisord: valheim-server 09/16/2026 07:45:48: Got character ZDOID from Loped : -12:5"
 
 
 def update(pid=A, epoch=100.0, name=None, platform="steam"):
@@ -107,3 +111,60 @@ def test_save_handles_mkstemp_failure_gracefully(tmp_path, caplog):
     # Verify the warning was logged
     assert "Could not write the roster" in caplog.text
     assert "Permission denied" in caplog.text
+
+
+class FakeControl:
+    """Stands in for DockerControl: records the `since` it was polled with."""
+
+    def __init__(self, batches):
+        self.batches = list(batches)
+        self.since_calls = []
+
+    def fetch_logs(self, *, since=None, tail="all"):
+        self.since_calls.append(since)
+        return self.batches.pop(0) if self.batches else []
+
+
+def test_a_harvest_records_the_player_and_the_name(tmp_path):
+    control = FakeControl([[LogLine(100.0, "r", JOIN_MSG), LogLine(150.0, "r", NAME_MSG)]])
+    store = PlayerStore(tmp_path / "players.json")
+    harvest_players(control, SessionTracker(), store, since=0.0, world="Midgard")
+    assert store.load()[A].name == "Loped"
+
+
+def test_a_harvest_returns_the_epoch_to_poll_from_next(tmp_path):
+    control = FakeControl([[LogLine(100.0, "r", JOIN_MSG), LogLine(150.0, "r", NAME_MSG)]])
+    store = PlayerStore(tmp_path / "players.json")
+    since = harvest_players(control, SessionTracker(), store, since=0.0, world="Midgard")
+    assert since == 150.0
+
+
+def test_an_empty_read_leaves_since_where_it_was(tmp_path):
+    control = FakeControl([[]])
+    store = PlayerStore(tmp_path / "players.json")
+    assert harvest_players(control, SessionTracker(), store, since=42.0, world=None) == 42.0
+
+
+def test_the_tracker_persists_across_harvests(tmp_path):
+    """A join in one poll and its name in the next must still correlate."""
+    control = FakeControl([[LogLine(100.0, "r", JOIN_MSG)], [LogLine(150.0, "r", NAME_MSG)]])
+    store = PlayerStore(tmp_path / "players.json")
+    tracker = SessionTracker()
+    since = harvest_players(control, tracker, store, since=0.0, world="Midgard")
+    harvest_players(control, tracker, store, since=since, world="Midgard")
+    assert store.load()[A].name == "Loped"
+
+
+def test_a_docker_error_does_not_escape(tmp_path):
+    """A watcher that raises would take down the only always-on task in the app."""
+
+    class Broken:
+        def fetch_logs(self, *, since=None, tail="all"):
+            raise DockerControlError("nope", "detail")
+
+    store = PlayerStore(tmp_path / "players.json")
+    assert harvest_players(Broken(), SessionTracker(), store, since=7.0, world=None) == 7.0
+
+
+def test_the_interval_is_a_sane_poll_rate():
+    assert 5 <= WATCH_INTERVAL_SECONDS <= 60

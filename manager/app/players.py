@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .player_log import PlayerUpdate
+from .player_log import PlayerUpdate, SessionTracker, parse_line
 from .state_store import fsync_directory
 
 log = logging.getLogger(__name__)
@@ -146,4 +146,50 @@ class PlayerStore:
             log.warning("Could not write the roster at %s: %s", self.path, exc)
 
 
-__all__ = ["PLAYERS_MODE", "Player", "PlayerStore"]
+WATCH_INTERVAL_SECONDS = 15
+
+
+def harvest_players(
+    control,
+    tracker: SessionTracker,
+    store: PlayerStore,
+    *,
+    since: float,
+    world: str | None,
+) -> float:
+    """One poll of the container log, folded into the roster.
+
+    Returns the epoch to poll from next -- the newest line seen, or ``since``
+    unchanged when nothing new arrived.
+
+    Swallows every exception on purpose. This runs in the only always-on background
+    task besides the backup timer; letting a transient Docker error escape would kill
+    the watcher for the lifetime of the process, and the next tick would have
+    recovered on its own.
+    """
+    try:
+        lines = control.fetch_logs(since=since or None, tail="all")
+    except Exception as exc:  # noqa: BLE001 - deliberate: see docstring
+        log.warning("Could not read the game log for the roster: %s", exc)
+        return since
+    if not lines:
+        return since
+    updates = []
+    newest = since
+    for line in lines:
+        newest = max(newest, line.epoch)
+        event = parse_line(line)
+        if event is None:
+            continue
+        update = tracker.apply(event)
+        if update is not None:
+            updates.append(update)
+    if updates:
+        try:
+            store.apply(updates, world=world)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("Could not update the roster: %s", exc)
+    return newest
+
+
+__all__ = ["PLAYERS_MODE", "Player", "PlayerStore", "WATCH_INTERVAL_SECONDS", "harvest_players"]
