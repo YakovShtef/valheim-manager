@@ -554,6 +554,100 @@ def test_the_raw_editor_refuses_an_unknown_list_kind(client_with_roster):
     assert response.status_code == 400
 
 
+# ---------------------------------------------- POST /api/players/whitelist
+
+
+def test_disabling_the_whitelist_parks_its_entries(client_with_roster):
+    client, tmp = client_with_roster
+    client.post(
+        "/api/players/add",
+        json={"kind": "permitted", "id": "V_7000"},
+        headers={"Origin": ORIGIN},
+    )
+    body = client.post(
+        "/api/players/whitelist", json={"enabled": False}, headers={"Origin": ORIGIN}
+    ).json()
+    assert body["whitelist_enabled"] is False
+    assert body["lists"]["permitted"]["ids"] == []
+    assert body["lists"]["permitted"]["parked"] == ["V_7000"]
+
+
+def test_a_parked_whitelist_does_not_lock_anyone_out(client_with_roster):
+    """Parked entries are comments, so the game reads the list as empty."""
+    client, tmp = client_with_roster
+    client.post(
+        "/api/players/add",
+        json={"kind": "permitted", "id": "V_7000"},
+        headers={"Origin": ORIGIN},
+    )
+    client.post(
+        "/api/players/whitelist", json={"enabled": False}, headers={"Origin": ORIGIN}
+    )
+    text = (tmp / "config" / "permittedlist.txt").read_text(encoding="utf-8")
+    assert all(line.startswith("//") for line in text.splitlines() if line.strip())
+
+
+def test_re_enabling_restores_the_parked_entries(client_with_roster):
+    client, _ = client_with_roster
+    client.post(
+        "/api/players/add",
+        json={"kind": "permitted", "id": "V_7000"},
+        headers={"Origin": ORIGIN},
+    )
+    client.post(
+        "/api/players/whitelist", json={"enabled": False}, headers={"Origin": ORIGIN}
+    )
+    body = client.post(
+        "/api/players/whitelist", json={"enabled": True}, headers={"Origin": ORIGIN}
+    ).json()
+    assert body["lists"]["permitted"]["ids"] == ["V_7000"]
+    assert body["whitelist_enabled"] is True
+
+
+def test_enabling_an_empty_whitelist_is_refused(client_with_roster):
+    """Turning it on with nobody on it locks out the entire server, including the
+    operator, who the manager cannot identify and so cannot protect."""
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/whitelist", json={"enabled": True}, headers={"Origin": ORIGIN}
+    )
+    assert response.status_code == 400
+    assert "at least one" in response.json()["error"].lower()
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_enabled_as_a_string_is_refused_rather_than_coerced(client_with_roster):
+    """A JSON string like ``"false"`` must not be treated as truthy."""
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/whitelist",
+        json={"enabled": "false"},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_an_unwritable_whitelist_is_a_500_not_a_400(client_with_roster):
+    """A ``PermissionListError`` out of ``write`` is a fault on the manager's
+    side, like the other players write routes -- so it answers 500."""
+    client, _ = client_with_roster
+    message = "Could not write /config/permittedlist.txt: [Errno 13] Permission denied"
+    with patch(
+        "app.main.PermissionLists.write",
+        side_effect=PermissionListError(message),
+    ):
+        response = client.post(
+            "/api/players/whitelist",
+            json={"enabled": False},
+            headers={"Origin": ORIGIN},
+        )
+    assert response.status_code == 500, response.text
+    assert response.json()["error"] == message
+
+
 # ------------------------------------- auth and origin enforcement (writes)
 
 # Every new write route, with a request body that would succeed if it got past
@@ -563,6 +657,7 @@ _PLAYERS_WRITE_REQUESTS = (
     ("/api/players/list", {"kind": "admin", "file_id": "V_9999", "member": True}),
     ("/api/players/add", {"kind": "admin", "id": "V_9999"}),
     ("/api/players/raw", {"kind": "admin", "text": "V_9999\n"}),
+    ("/api/players/whitelist", {"enabled": False}),
 )
 
 
