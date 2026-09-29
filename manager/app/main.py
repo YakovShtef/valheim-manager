@@ -40,6 +40,7 @@ import hashlib
 import logging
 import os
 import time
+import unicodedata
 import uuid
 from datetime import datetime
 from contextlib import suppress
@@ -380,6 +381,45 @@ async def _json_body(request: Request) -> dict[str, Any]:
     except Exception:
         return {}
     return body if isinstance(body, dict) else {}
+
+
+def _unsafe_file_id_reason(file_id: str) -> str | None:
+    """Why ``file_id`` cannot be written as a line in a list file, or ``None``.
+
+    This is a LINE-SAFETY check, not an ID-*shape* check -- it must accept ids
+    that ``normalise_typed_id`` would refuse, such as a bare 17-digit SteamID
+    someone hand-typed into a file before this feature existed. The roster
+    shows a row for exactly that kind of malformed file entry, and an operator
+    must still be able to remove it through ``/api/players/list``; shape-
+    validating here would make those rows impossible to take off a list, which
+    is exactly when removing one matters most.
+
+    What this refuses instead is anything that cannot round-trip as a single
+    line in the file: whitespace or control characters anywhere in the (already
+    end-stripped) value -- a real newline turns ``render_list_text``'s
+    ``"\\n".join`` into two lines, and the second can parse back as a
+    ``// disabled-by-manager`` comment, silently parking or unparking an
+    unrelated id -- and a leading ``//``, which the file's parser reads as a
+    comment rather than an id.
+
+    A hand-typed id that itself contains internal whitespace is therefore still
+    not removable through this route; use the raw editor for that list instead,
+    which writes exactly the text given rather than composing a line.
+    """
+    if any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in file_id):
+        return (
+            "That ID contains a newline, tab, or other whitespace/control "
+            "character, which cannot be written as a single line in the list "
+            "file. If this entry needs to be fixed or removed, use the raw "
+            "editor for that list instead."
+        )
+    if file_id.startswith("//"):
+        return (
+            "That ID starts with '//', which the list file would read as a "
+            "comment rather than a player. Use the raw editor for that list "
+            "instead."
+        )
+    return None
 
 
 class ApiError(Exception):
@@ -1786,9 +1826,15 @@ def create_app(
         file_id = str(body.get("file_id", "")).strip()
         if not file_id:
             raise ApiError(400, "No player was named.")
+        unsafe = _unsafe_file_id_reason(file_id)
+        if unsafe is not None:
+            raise ApiError(400, unsafe)
+        member = body.get("member")
+        if not isinstance(member, bool):
+            raise ApiError(400, "\"member\" must be true or false.")
         lists = PermissionLists(config.valheim_config_dir)
         try:
-            if body.get("member"):
+            if member:
                 lists.add(kind, file_id)
             else:
                 lists.remove(kind, file_id)
