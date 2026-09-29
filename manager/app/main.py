@@ -66,6 +66,8 @@ from .permission_lists import (
     PERMITTED,
     PermissionListError,
     PermissionLists,
+    normalise_typed_id,
+    parse_list_text,
     to_file_id,
 )
 from .player_log import SessionTracker
@@ -1766,6 +1768,95 @@ def create_app(
     async def api_players(request: Request) -> dict[str, Any]:
         require_session(request)
         return await run_in_threadpool(_roster_payload)
+
+    def _players_list_membership(body: dict[str, Any]) -> dict[str, Any]:
+        """Put a player on, or take them off, one of the three lists. Blocking
+        (file I/O), so: threadpool.
+
+        A ``PermissionListError`` here comes from ``read``/``write`` themselves --
+        the file could not be read or the replacement could not be written -- which
+        is a fault on this side, not something the caller typed wrong. That is the
+        same split ``_roster_payload`` already makes for reads, and what a settings
+        or world read-failure answers with elsewhere in this file (e.g.
+        ``_switch_world``): 500, not 400.
+        """
+        kind = str(body.get("kind", ""))
+        if kind not in (ADMIN, BANNED, PERMITTED):
+            raise ApiError(400, f"There is no {kind!r} list.")
+        file_id = str(body.get("file_id", "")).strip()
+        if not file_id:
+            raise ApiError(400, "No player was named.")
+        lists = PermissionLists(config.valheim_config_dir)
+        try:
+            if body.get("member"):
+                lists.add(kind, file_id)
+            else:
+                lists.remove(kind, file_id)
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/list")
+    async def api_players_list(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_list_membership, await _json_body(request))
+
+    def _players_add(body: dict[str, Any]) -> dict[str, Any]:
+        """Add a player by a typed id, in the file form the operator entered by hand.
+
+        Blocking (file I/O), so: threadpool. See ``_players_list_membership`` for why
+        a ``PermissionListError`` here is a 500: the id has already been validated by
+        ``normalise_typed_id`` by the time ``add`` can raise one.
+        """
+        kind = str(body.get("kind", ""))
+        if kind not in (ADMIN, BANNED, PERMITTED):
+            raise ApiError(400, f"There is no {kind!r} list.")
+        file_id, refusal = normalise_typed_id(str(body.get("id", "")))
+        if refusal is not None:
+            raise ApiError(400, refusal)
+        try:
+            PermissionLists(config.valheim_config_dir).add(kind, file_id)
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/add")
+    async def api_players_add(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_add, await _json_body(request))
+
+    def _players_raw(body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a whole list file from the raw editor. Blocking: threadpool.
+
+        The escape hatch the table cannot be: it writes whatever the operator typed,
+        because the whole point is to represent something the table cannot. It still
+        goes through the same parser and writer, so comments are preserved and the
+        mode is still 0664 -- the editor is a different UI, not a different writer.
+
+        One asymmetry worth understanding: ``write`` keeps the *existing* file's
+        comments rather than any in the submitted text, because the comment is the
+        game's header and not the operator's to retype. An operator who deletes the
+        header line in the editor gets it back, which is the intended behaviour.
+        """
+        kind = str(body.get("kind", ""))
+        if kind not in (ADMIN, BANNED, PERMITTED):
+            raise ApiError(400, f"There is no {kind!r} list.")
+        parsed = parse_list_text(kind, str(body.get("text", "")))
+        try:
+            PermissionLists(config.valheim_config_dir).write(
+                kind, parsed.ids, parked=parsed.parked
+            )
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/raw")
+    async def api_players_raw(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_raw, await _json_body(request))
 
     @app.get("/api/backups")
     async def api_backups(request: Request) -> JSONResponse:

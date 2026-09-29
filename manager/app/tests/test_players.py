@@ -21,7 +21,10 @@ from app.players import WATCH_INTERVAL_SECONDS, Player, PlayerStore, harvest_pla
 
 # `build_config`/`build_control` need a temp env file and a fake engine; pytest
 # resolves a fixture's own dependencies by name, so they have to come across too.
+# `ORIGIN` is the Origin header every same-origin POST in this suite sends --
+# `require_same_origin` rejects a request that omits it.
 from app.tests.test_edge_cases import (  # noqa: F401  (fixtures)
+    ORIGIN,
     build_config,
     build_control,
     env_file,
@@ -190,13 +193,13 @@ def test_the_interval_is_a_sane_poll_rate():
 
 
 @pytest.fixture
-def client_with_roster(tmp_path, env_file, fake_docker):
-    """The real app, with a roster and the three list files seeded underneath it.
+def roster_app(tmp_path, env_file, fake_docker):
+    """The real app, with a roster and the three list files seeded underneath it --
+    built but not yet wrapped in a logged-in client.
 
-    The players state directory exists here, so the background watcher DOES start
-    and polls the fake Docker engine -- same as it would in production. The fake
-    engine has no log lines queued, so a poll finds nothing and leaves the roster
-    this fixture seeds directly untouched.
+    Split out from ``client_with_roster`` so the auth/origin-rejection tests can
+    drive their own ``TestClient`` (unauthenticated, or logged in with a foreign
+    Origin) against the same on-disk files.
     """
     state = tmp_path / "state"
     state.mkdir()
@@ -221,6 +224,19 @@ def client_with_roster(tmp_path, env_file, fake_docker):
     )
     control = build_control(config, fake_docker)
     app = create_app(config=config, controller=control)
+    return app, tmp_path
+
+
+@pytest.fixture
+def client_with_roster(roster_app):
+    """The real app from ``roster_app``, wrapped in an already-logged-in client.
+
+    The players state directory exists here, so the background watcher DOES start
+    and polls the fake Docker engine -- same as it would in production. The fake
+    engine has no log lines queued, so a poll finds nothing and leaves the roster
+    this fixture seeds directly untouched.
+    """
+    app, tmp_path = roster_app
     with TestClient(app) as client:
         login(client)
         yield client, tmp_path
@@ -279,3 +295,200 @@ def test_an_unreadable_list_file_is_a_refusal_not_a_crash(client_with_roster):
 
     assert response.status_code == 500, response.text
     assert response.json()["error"] == message
+
+
+# --------------------------------------------------- POST /api/players/list
+
+
+def test_making_a_player_an_admin_writes_the_file(client_with_roster):
+    client, tmp = client_with_roster
+    body = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": "V_76561198000000001", "member": True},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert "V_76561198000000001" in body["lists"]["admin"]["ids"]
+    assert "V_76561198000000001" in (tmp / "config" / "adminlist.txt").read_text(encoding="utf-8")
+
+
+def test_removing_admin_rewrites_the_file_without_them(client_with_roster):
+    client, tmp = client_with_roster
+    body = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": A_FILE_ID, "member": False},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert body["lists"]["admin"]["ids"] == []
+
+
+def test_a_membership_change_preserves_the_header_comment(client_with_roster):
+    client, tmp = client_with_roster
+    client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": A_FILE_ID, "member": False},
+        headers={"Origin": ORIGIN},
+    )
+    assert "// " in (tmp / "config" / "adminlist.txt").read_text(encoding="utf-8")
+
+
+def test_an_unknown_list_kind_is_refused(client_with_roster):
+    client, _ = client_with_roster
+    response = client.post(
+        "/api/players/list",
+        json={"kind": "friends", "file_id": A_FILE_ID, "member": True},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+
+
+def test_a_missing_file_id_is_refused(client_with_roster):
+    client, _ = client_with_roster
+    response = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": "  ", "member": True},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+
+
+def test_an_unwritable_list_is_a_500_not_a_400(client_with_roster):
+    """A ``PermissionListError`` out of ``add``/``remove`` is a fault on the
+    manager's side (the same file a bad-permission read would fail on), not
+    something the caller typed wrong -- so it answers 500, like the GET route.
+    """
+    client, _ = client_with_roster
+    message = "Could not write /config/adminlist.txt: [Errno 13] Permission denied"
+    with patch(
+        "app.main.PermissionLists.add",
+        side_effect=PermissionListError(message),
+    ):
+        response = client.post(
+            "/api/players/list",
+            json={"kind": "admin", "file_id": "V_7000", "member": True},
+            headers={"Origin": ORIGIN},
+        )
+    assert response.status_code == 500, response.text
+    assert response.json()["error"] == message
+
+
+# ---------------------------------------------------- POST /api/players/add
+
+
+def test_adding_a_bare_steam_id_is_refused_with_advice(client_with_roster):
+    client, _ = client_with_roster
+    response = client.post(
+        "/api/players/add",
+        json={"kind": "admin", "id": "76561198086248026"},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert "F2" in response.json()["error"]
+
+
+def test_adding_a_well_formed_id_succeeds(client_with_roster):
+    client, _ = client_with_roster
+    body = client.post(
+        "/api/players/add",
+        json={"kind": "admin", "id": "V_7000"},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert "V_7000" in body["lists"]["admin"]["ids"]
+
+
+def test_adding_to_an_unknown_list_kind_is_refused(client_with_roster):
+    client, _ = client_with_roster
+    response = client.post(
+        "/api/players/add",
+        json={"kind": "friends", "id": "V_7000"},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+
+
+# ---------------------------------------------------- POST /api/players/raw
+
+
+def test_the_raw_editor_replaces_the_whole_list(client_with_roster):
+    client, _ = client_with_roster
+    body = client.post(
+        "/api/players/raw",
+        json={"kind": "admin", "text": "V_1111\nV_2222\n"},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert body["lists"]["admin"]["ids"] == ["V_1111", "V_2222"]
+
+
+def test_the_raw_editor_cannot_delete_the_game_s_header(client_with_roster):
+    """The header is the game's, not the operator's to retype."""
+    client, tmp = client_with_roster
+    client.post(
+        "/api/players/raw",
+        json={"kind": "admin", "text": "V_1111\n"},
+        headers={"Origin": ORIGIN},
+    )
+    assert "// " in (tmp / "config" / "adminlist.txt").read_text(encoding="utf-8")
+
+
+def test_the_raw_editor_can_empty_a_list(client_with_roster):
+    client, _ = client_with_roster
+    body = client.post(
+        "/api/players/raw",
+        json={"kind": "admin", "text": ""},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert body["lists"]["admin"]["ids"] == []
+
+
+def test_the_raw_editor_refuses_an_unknown_list_kind(client_with_roster):
+    client, _ = client_with_roster
+    response = client.post(
+        "/api/players/raw",
+        json={"kind": "friends", "text": "V_1111\n"},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+
+
+# ------------------------------------- auth and origin enforcement (writes)
+
+# Every new write route, with a request body that would succeed if it got past
+# the guards. Used to prove each one is blocked, and blocked *before* any file
+# is touched, both unauthenticated and from a foreign Origin.
+_PLAYERS_WRITE_REQUESTS = (
+    ("/api/players/list", {"kind": "admin", "file_id": "V_9999", "member": True}),
+    ("/api/players/add", {"kind": "admin", "id": "V_9999"}),
+    ("/api/players/raw", {"kind": "admin", "text": "V_9999\n"}),
+)
+
+
+def _list_files_snapshot(tmp: object) -> dict[str, str]:
+    config_dir = tmp / "config"
+    return {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(config_dir.glob("*.txt"))
+    }
+
+
+def test_unauthenticated_players_writes_are_blocked_and_touch_no_files(roster_app):
+    app, tmp = roster_app
+    before = _list_files_snapshot(tmp)
+    with TestClient(app) as client:
+        for path, body in _PLAYERS_WRITE_REQUESTS:
+            response = client.post(path, json=body, headers={"Origin": ORIGIN})
+            assert response.status_code == 401, path
+            assert response.json()["error"] == "Authentication required."
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_foreign_origin_is_rejected_for_players_writes_and_touches_no_files(roster_app):
+    app, tmp = roster_app
+    before = _list_files_snapshot(tmp)
+    with TestClient(app) as client:
+        login(client)
+        for path, body in _PLAYERS_WRITE_REQUESTS:
+            response = client.post(
+                path, json=body, headers={"Origin": "http://evil.example"}
+            )
+            assert response.status_code == 403, path
+            assert "cross-site" in response.json()["error"]
+    assert _list_files_snapshot(tmp) == before
