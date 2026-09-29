@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.docker_control import DockerControlError, LogLine
 from app.main import create_app
+from app.permission_lists import PermissionListError
 from app.player_log import PlayerUpdate, SessionTracker
 from app.players import WATCH_INTERVAL_SECONDS, Player, PlayerStore, harvest_players
 
@@ -243,8 +244,38 @@ def test_an_id_only_in_a_file_still_gets_a_row(client_with_roster):
 
 
 def test_membership_is_read_from_the_file_not_the_store(client_with_roster):
-    """Edit the file underneath the app; the next read must reflect it."""
+    """Edit the file underneath the app; the next read must reflect it.
+
+    Two requests on purpose: a single request made only after the edit would also
+    pass under a regression that computes membership once and memoises it (e.g. an
+    `lru_cache` on `_roster_payload`), since that first computation would already
+    happen after the edit. Reading True *before* the edit rules that out.
+    """
     client, tmp = client_with_roster
+    before = {row["id"]: row for row in client.get("/api/players").json()["players"]}
+    assert before[A_FILE_ID]["is_admin"] is True
+
     (tmp / "config" / "adminlist.txt").write_text("// header\n", encoding="utf-8")
-    rows = {row["id"]: row for row in client.get("/api/players").json()["players"]}
-    assert rows[A_FILE_ID]["is_admin"] is False
+
+    after = {row["id"]: row for row in client.get("/api/players").json()["players"]}
+    assert after[A_FILE_ID]["is_admin"] is False
+
+
+def test_an_unreadable_list_file_is_a_refusal_not_a_crash(client_with_roster):
+    """A `PermissionListError` (e.g. a permission problem on the /config mount) must
+    surface as this app's own `{"error": ...}` shape, not an unhandled traceback.
+
+    `chmod` cannot produce a real permission failure reliably on Windows CI, so the
+    failure is induced directly: monkeypatch `PermissionLists.read` to raise the same
+    exception a real unreadable file would.
+    """
+    client, tmp = client_with_roster
+    message = "Could not read /config/adminlist.txt: [Errno 13] Permission denied"
+    with patch(
+        "app.main.PermissionLists.read",
+        side_effect=PermissionListError(message),
+    ):
+        response = client.get("/api/players")
+
+    assert response.status_code == 500, response.text
+    assert response.json()["error"] == message
