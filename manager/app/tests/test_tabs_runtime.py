@@ -77,6 +77,15 @@ CASES = [
     "touching_the_time_field_picks_that_mode",
     "turning_backups_off_disables_the_time_field",
     "saving_posts_both_the_mode_and_the_time",
+    "the_players_tab_shows_its_panel",
+    "a_roster_time_reads_on_the_server_clock_whatever_the_browser_zone",
+    "the_permitted_editor_keeps_parked_players_as_disabled_lines",
+    "nothing_on_the_page_offers_a_kick",
+    "a_row_without_a_usable_id_cannot_be_ticked_and_says_why",
+    "a_refused_tick_is_put_back_from_a_fresh_read",
+    "turning_the_permitted_list_on_asks_first",
+    "ticking_permitted_while_the_list_is_off_never_switches_it_on",
+    "a_list_variable_in_valheim_env_is_named_in_a_warning",
 ]
 
 SETUP = (

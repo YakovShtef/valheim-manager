@@ -5083,7 +5083,7 @@ def test_every_upload_refusal_is_logged_on_the_host(worlds, caplog):
 # keyboard and the screen reader depend on is internally consistent.
 # =====================================================================
 
-PANEL_IDS = ["panel-console", "panel-settings", "panel-worlds", "panel-mods"]
+PANEL_IDS = ["panel-console", "panel-settings", "panel-worlds", "panel-mods", "panel-players"]
 
 TAB_BUTTON_RE = re.compile(r"<button[^>]*\brole=\"tab\"[^>]*>", re.S)
 
