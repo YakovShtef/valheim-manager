@@ -10,11 +10,26 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+from fastapi.testclient import TestClient
+
 from app.docker_control import DockerControlError, LogLine
+from app.main import create_app
 from app.player_log import PlayerUpdate, SessionTracker
 from app.players import WATCH_INTERVAL_SECONDS, Player, PlayerStore, harvest_players
 
+# `build_config`/`build_control` need a temp env file and a fake engine; pytest
+# resolves a fixture's own dependencies by name, so they have to come across too.
+from app.tests.test_edge_cases import (  # noqa: F401  (fixtures)
+    build_config,
+    build_control,
+    env_file,
+    fake_docker,
+    login,
+)
+
 A = "76561198012345678"
+A_FILE_ID = "V_76561198012345678"
 
 JOIN_MSG = "supervisord: valheim-server 09/16/2026 07:45:28: Got connection SteamID 76561198012345678"
 NAME_MSG = "supervisord: valheim-server 09/16/2026 07:45:48: Got character ZDOID from Ragnar : -12:5"
@@ -168,3 +183,68 @@ def test_a_docker_error_does_not_escape(tmp_path):
 
 def test_the_interval_is_a_sane_poll_rate():
     assert 5 <= WATCH_INTERVAL_SECONDS <= 60
+
+
+# ---------------------------------------------------------- GET /api/players
+
+
+@pytest.fixture
+def client_with_roster(tmp_path, env_file, fake_docker):
+    """The real app, with a roster and the three list files seeded underneath it.
+
+    The players state directory exists here, so the background watcher DOES start
+    and polls the fake Docker engine -- same as it would in production. The fake
+    engine has no log lines queued, so a poll finds nothing and leaves the roster
+    this fixture seeds directly untouched.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+
+    (config_dir / "adminlist.txt").write_text(f"// header\n{A_FILE_ID}\n", encoding="utf-8")
+    (config_dir / "bannedlist.txt").write_text(
+        "// header\nV_76561198000000001\n", encoding="utf-8"
+    )
+
+    players_file = state / "players.json"
+    PlayerStore(players_file).apply(
+        [PlayerUpdate(platform_id=A, platform="steam", epoch=100.0, name="Ragnar")],
+        world="Midgard",
+    )
+
+    config = build_config(
+        env_file,
+        players_file=str(players_file),
+        valheim_config_dir=str(config_dir),
+    )
+    control = build_control(config, fake_docker)
+    app = create_app(config=config, controller=control)
+    with TestClient(app) as client:
+        login(client)
+        yield client, tmp_path
+
+
+def test_the_roster_endpoint_merges_the_files_with_the_store(client_with_roster):
+    client, tmp = client_with_roster
+    body = client.get("/api/players").json()
+    rows = {row["id"]: row for row in body["players"]}
+    assert rows[A_FILE_ID]["is_admin"] is True
+    assert rows[A_FILE_ID]["seen"] is True
+
+
+def test_an_id_only_in_a_file_still_gets_a_row(client_with_roster):
+    """Someone made admin before this feature existed has never joined, so has no
+    sighting -- but must still be visible and removable."""
+    client, tmp = client_with_roster
+    rows = {row["id"]: row for row in client.get("/api/players").json()["players"]}
+    assert rows["V_76561198000000001"]["seen"] is False
+    assert rows["V_76561198000000001"]["is_banned"] is True
+
+
+def test_membership_is_read_from_the_file_not_the_store(client_with_roster):
+    """Edit the file underneath the app; the next read must reflect it."""
+    client, tmp = client_with_roster
+    (tmp / "config" / "adminlist.txt").write_text("// header\n", encoding="utf-8")
+    rows = {row["id"]: row for row in client.get("/api/players").json()["players"]}
+    assert rows[A_FILE_ID]["is_admin"] is False

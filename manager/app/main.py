@@ -60,6 +60,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from .auth import LOGIN_ERROR, AuthConfigError, SessionAuth
 from .docker_control import DockerControl, DockerControlError
+from .permission_lists import ADMIN, BANNED, PERMITTED, PermissionLists, to_file_id
 from .player_log import SessionTracker
 from .players import WATCH_INTERVAL_SECONDS, PlayerStore, harvest_players
 from .modifiers import (
@@ -285,6 +286,11 @@ class AppConfig:
     # Beside the other two on the same manager-owned volume, for the same reason: the
     # roster is not a secret and has no business sharing a document with ones that are.
     players_file: str = "/srv/state/players.json"
+    # The GAME's config volume, mounted into the manager too, so the roster endpoint
+    # can read the same adminlist.txt/bannedlist.txt/permittedlist.txt the game
+    # server reads. Not the manager-owned state above: these three files are the
+    # game's, and the manager is only a second writer on them.
+    valheim_config_dir: str = "/config"
     # Only used to print a clickable setup URL; the manager never calls itself.
     manager_url: str = ""
     restart_policy: str = "unless-stopped"
@@ -341,6 +347,7 @@ def config_from_env() -> AppConfig:
             "BACKUP_SCHEDULE_FILE", AppConfig.backup_schedule_file
         ),
         players_file=os.environ.get("PLAYERS_FILE", AppConfig.players_file),
+        valheim_config_dir=os.environ.get("VALHEIM_CONFIG_DIR", AppConfig.valheim_config_dir),
         manager_url=os.environ.get("MANAGER_URL", "").strip(),
         restart_policy=os.environ.get("VALHEIM_RESTART_POLICY", "unless-stopped"),
         stop_timeout=_env_int("VALHEIM_STOP_TIMEOUT", 120, minimum=1),
@@ -1671,6 +1678,78 @@ def create_app(
             else "Automatic backups off. Nothing already saved was removed."
         )
         return JSONResponse(_backups_panel(message=line))
+
+    def _roster_payload() -> dict[str, Any]:
+        """The roster, merged with the three files.
+
+        Membership is computed here, on every request, from the files themselves.
+        Nothing about who is an admin is cached in the roster store: one copy of the
+        fact is what stops this table and the raw editors disagreeing.
+        """
+        store = PlayerStore(config.players_file)
+        lists = PermissionLists(config.valheim_config_dir)
+        files = {kind: lists.read(kind) for kind in (ADMIN, BANNED, PERMITTED)}
+        members = {kind: set(entry.ids) for kind, entry in files.items()}
+
+        rows: dict[str, dict[str, Any]] = {}
+        for player in store.load().values():
+            file_id = to_file_id(player.platform_id, player.platform)
+            key = file_id or player.platform_id
+            rows[key] = {
+                # `id` is the merge key and what the UI shows: the file form when we
+                # have one, the raw logged id when we do not. `platform_id` stays the
+                # raw value so a mis-converted row is still correctable.
+                "id": key,
+                "platform_id": player.platform_id,
+                "file_id": file_id,
+                "name": player.name,
+                "first_seen": player.first_seen,
+                "last_seen": player.last_seen,
+                "last_world": player.last_world,
+                "seen": True,
+            }
+        # Anyone in a file who has never joined still needs a row, or they cannot be
+        # removed from the panel that claims to manage these files.
+        for ids in members.values():
+            for file_id in ids:
+                rows.setdefault(
+                    file_id,
+                    {
+                        "id": file_id,
+                        "platform_id": None,
+                        "file_id": file_id,
+                        "name": None,
+                        "first_seen": None,
+                        "last_seen": None,
+                        "last_world": None,
+                        "seen": False,
+                    },
+                )
+        for file_id, row in rows.items():
+            row["is_admin"] = file_id in members[ADMIN]
+            row["is_banned"] = file_id in members[BANNED]
+            row["is_permitted"] = file_id in members[PERMITTED]
+
+        return {
+            "players": sorted(
+                rows.values(),
+                key=lambda row: (row["last_seen"] is None, -(row["last_seen"] or 0.0)),
+            ),
+            "lists": {
+                kind: {
+                    "ids": list(entry.ids),
+                    "comments": list(entry.comments),
+                    "parked": list(entry.parked),
+                }
+                for kind, entry in files.items()
+            },
+            "whitelist_enabled": bool(files[PERMITTED].ids),
+        }
+
+    @app.get("/api/players")
+    async def api_players(request: Request) -> dict[str, Any]:
+        require_session(request)
+        return await run_in_threadpool(_roster_payload)
 
     @app.get("/api/backups")
     async def api_backups(request: Request) -> JSONResponse:
