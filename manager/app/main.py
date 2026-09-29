@@ -1904,6 +1904,48 @@ def create_app(
         require_same_origin(request)
         return await run_in_threadpool(_players_raw, await _json_body(request))
 
+    def _players_whitelist(body: dict[str, Any]) -> dict[str, Any]:
+        """Turn the permitted list on or off without losing its contents.
+
+        Off parks every entry as a ``// disabled-by-manager`` comment: the game
+        ignores comments, so the list reads as empty and nobody is locked out,
+        while the entries survive to be switched back on. On restores them --
+        unless there is nothing to restore, since an empty permitted list that is
+        switched on stops everyone joining, including the operator, whom the
+        manager cannot identify and so cannot protect.
+
+        See ``_players_list_membership`` for why a ``PermissionListError`` here
+        (from ``read``/``write`` themselves) is a 500, not a 400.
+        """
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ApiError(400, "\"enabled\" must be true or false.")
+        lists = PermissionLists(config.valheim_config_dir)
+        try:
+            current = lists.read(PERMITTED)
+            if enabled:
+                restored = tuple(dict.fromkeys((*current.parked, *current.ids)))
+                if not restored:
+                    raise ApiError(
+                        400,
+                        "Add at least one player before turning the permitted "
+                        "list on. An empty permitted list that is switched on "
+                        "stops everyone joining, including the operator.",
+                    )
+                lists.write(PERMITTED, restored, parked=())
+            else:
+                parked = tuple(dict.fromkeys((*current.parked, *current.ids)))
+                lists.write(PERMITTED, (), parked=parked)
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/whitelist")
+    async def api_players_whitelist(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_whitelist, await _json_body(request))
+
     @app.get("/api/backups")
     async def api_backups(request: Request) -> JSONResponse:
         require_session(request)
