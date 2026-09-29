@@ -60,7 +60,14 @@ from starlette.websockets import WebSocketDisconnect
 
 from .auth import LOGIN_ERROR, AuthConfigError, SessionAuth
 from .docker_control import DockerControl, DockerControlError
-from .permission_lists import ADMIN, BANNED, PERMITTED, PermissionLists, to_file_id
+from .permission_lists import (
+    ADMIN,
+    BANNED,
+    PERMITTED,
+    PermissionListError,
+    PermissionLists,
+    to_file_id,
+)
 from .player_log import SessionTracker
 from .players import WATCH_INTERVAL_SECONDS, PlayerStore, harvest_players
 from .modifiers import (
@@ -1688,7 +1695,16 @@ def create_app(
         """
         store = PlayerStore(config.players_file)
         lists = PermissionLists(config.valheim_config_dir)
-        files = {kind: lists.read(kind) for kind in (ADMIN, BANNED, PERMITTED)}
+        try:
+            files = {kind: lists.read(kind) for kind in (ADMIN, BANNED, PERMITTED)}
+        except PermissionListError as exc:
+            # A list file the manager cannot read is a fault on this side, not a
+            # malformed request -- the same status a settings-read failure answers
+            # with elsewhere in this file (see e.g. `_switch_world`). Raised here,
+            # at the payload level, rather than in each route: Tasks 8-10 return this
+            # same payload from POST routes too, and they get the same handling for
+            # free.
+            raise ApiError(500, str(exc)) from exc
         members = {kind: set(entry.ids) for kind, entry in files.items()}
 
         rows: dict[str, dict[str, Any]] = {}
