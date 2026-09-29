@@ -212,17 +212,31 @@ def normalise_typed_id(text: str) -> tuple[str | None, str | None]:
     return value, None
 
 
+# The image writes these three files from these three variables at every container
+# start, overriding whatever is on the volume. A value here silently discards every
+# edit the panel makes, on the next start rather than immediately -- which is the
+# hardest kind of failure to connect back to its cause.
+OVERWRITING_ENV_VARS = ("ADMINLIST_IDS", "BANNEDLIST_IDS", "PERMITTEDLIST_IDS")
+
+
+def overwriting_env_vars(settings: dict[str, str]) -> list[str]:
+    """Which of the three overriding variables are set to a real value."""
+    return [name for name in OVERWRITING_ENV_VARS if str(settings.get(name, "")).strip()]
+
+
 __all__ = [
     "ADMIN",
     "BANNED",
     "LIST_FILENAMES",
     "LIST_MODE",
+    "OVERWRITING_ENV_VARS",
     "PERMITTED",
     "STEAM_FILE_PREFIX",
     "ListFile",
     "PermissionListError",
     "PermissionLists",
     "normalise_typed_id",
+    "overwriting_env_vars",
     "parse_list_text",
     "render_list_text",
     "to_file_id",

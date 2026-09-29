@@ -20,6 +20,7 @@ from app.permission_lists import (
     PermissionListError,
     PermissionLists,
     normalise_typed_id,
+    overwriting_env_vars,
     to_file_id,
 )
 
@@ -189,3 +190,24 @@ def test_an_id_with_a_space_in_it_is_refused():
 
 def test_case_is_never_altered():
     assert normalise_typed_id("v_76561198012345678") == ("v_76561198012345678", None)
+
+
+def test_no_conflict_when_the_variables_are_unset():
+    assert overwriting_env_vars({"SERVER_NAME": "Midgard"}) == []
+
+
+def test_a_set_adminlist_ids_is_reported():
+    assert overwriting_env_vars({"ADMINLIST_IDS": "76561198012345678"}) == ["ADMINLIST_IDS"]
+
+
+def test_an_empty_value_is_not_a_conflict():
+    assert overwriting_env_vars({"ADMINLIST_IDS": "  "}) == []
+
+
+def test_all_three_are_checked():
+    settings = {"ADMINLIST_IDS": "a", "BANNEDLIST_IDS": "b", "PERMITTEDLIST_IDS": "c"}
+    assert overwriting_env_vars(settings) == [
+        "ADMINLIST_IDS",
+        "BANNEDLIST_IDS",
+        "PERMITTEDLIST_IDS",
+    ]

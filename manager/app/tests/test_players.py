@@ -8,6 +8,7 @@ the table and the raw editors two copies of one fact and let them drift.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -18,12 +19,16 @@ from app.main import create_app
 from app.permission_lists import PermissionListError
 from app.player_log import PlayerUpdate, SessionTracker
 from app.players import WATCH_INTERVAL_SECONDS, Player, PlayerStore, harvest_players
+from app.settings_store import SettingsFileError, SettingsStore
 
 # `build_config`/`build_control` need a temp env file and a fake engine; pytest
 # resolves a fixture's own dependencies by name, so they have to come across too.
 # `ORIGIN` is the Origin header every same-origin POST in this suite sends --
 # `require_same_origin` rejects a request that omits it.
+# `ENV_FILE_TEXT` is the well-formed settings file the `env_file` fixture seeds --
+# reused here as the base onto which the overwriting env vars are appended.
 from app.tests.test_edge_cases import (  # noqa: F401  (fixtures)
+    ENV_FILE_TEXT,
     ORIGIN,
     build_config,
     build_control,
@@ -295,6 +300,42 @@ def test_an_unreadable_list_file_is_a_refusal_not_a_crash(client_with_roster):
 
     assert response.status_code == 500, response.text
     assert response.json()["error"] == message
+
+
+def test_the_roster_reports_a_set_overwriting_env_var(client_with_roster):
+    """An operator who sets ADMINLIST_IDS in valheim.env has the image silently
+    rewrite adminlist.txt from it on every container start, discarding whatever
+    the panel wrote. The roster must surface that instead of staying quiet."""
+    client, tmp = client_with_roster
+    (tmp / "valheim.env").write_text(ENV_FILE_TEXT + "ADMINLIST_IDS=V_1\n", encoding="utf-8")
+    body = client.get("/api/players").json()
+    assert body["list_env_conflicts"] == ["ADMINLIST_IDS"]
+
+
+def test_the_roster_reports_no_conflicts_when_none_are_set(client_with_roster):
+    client, _ = client_with_roster
+    body = client.get("/api/players").json()
+    assert body["list_env_conflicts"] == []
+
+
+def test_an_unreadable_settings_file_does_not_break_the_roster(client_with_roster):
+    """The settings panel already surfaces an unreadable valheim.env to the operator;
+    the roster must not turn that into a second, louder failure."""
+    client, _ = client_with_roster
+    with patch.object(SettingsStore, "read", side_effect=SettingsFileError("nope")):
+        response = client.get("/api/players")
+    assert response.status_code == 200, response.text
+    assert response.json()["list_env_conflicts"] == []
+
+
+def test_startup_warns_when_an_overwriting_env_var_is_set(env_file, fake_docker, caplog):
+    env_file.write_text(ENV_FILE_TEXT + "ADMINLIST_IDS=V_1\n", encoding="utf-8")
+    config = build_config(env_file)
+    control = build_control(config, fake_docker)
+    with caplog.at_level(logging.WARNING, logger="valheim_manager"):
+        create_app(config=config, controller=control)
+    assert "ADMINLIST_IDS" in caplog.text
+    assert "valheim.env" in caplog.text
 
 
 # --------------------------------------------------- POST /api/players/list
