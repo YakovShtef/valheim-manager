@@ -68,6 +68,7 @@ from .permission_lists import (
     PermissionListError,
     PermissionLists,
     normalise_typed_id,
+    overwriting_env_vars,
     parse_list_text,
     to_file_id,
 )
@@ -557,6 +558,18 @@ def create_app(
         except SettingsFileError:
             return ""
 
+    def _list_env_conflicts() -> list[str]:
+        """Overriding env vars set in valheim.env, or [] when it cannot be read.
+
+        The settings panel already surfaces an unreadable settings file to the
+        operator; neither the roster nor startup should turn that into a second,
+        louder failure.
+        """
+        try:
+            return overwriting_env_vars(store.read())
+        except SettingsFileError:
+            return []
+
     def _mods_for_the_next_start() -> None:
         """Put the loaded world's mods in front of BepInEx. Runs just before create.
 
@@ -607,6 +620,14 @@ def create_app(
         _log_setup_banner(config, setup)
     else:
         log.info("Admin credentials loaded from the %s; /setup is closed.", credential_source)
+    conflicts = _list_env_conflicts()
+    if conflicts:
+        log.warning(
+            "%s set in valheim.env. The game image rewrites the matching list file "
+            "from it every time the container starts, which will discard changes made "
+            "in the Players tab. Unset it there to manage these lists from the WebUI.",
+            ", ".join(conflicts),
+        )
     control = controller or DockerControl(
         base_url=config.docker_host,
         container_name=config.container_name,
@@ -1802,6 +1823,7 @@ def create_app(
                 for kind, entry in files.items()
             },
             "whitelist_enabled": bool(files[PERMITTED].ids),
+            "list_env_conflicts": _list_env_conflicts(),
         }
 
     @app.get("/api/players")
