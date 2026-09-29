@@ -36,6 +36,10 @@
             aria-controls="panel-mods" aria-selected="false" tabindex="-1">
       Mods <span class="tab-note" data-tab-note hidden></span>
     </button>
+    <button type="button" class="tab" role="tab" id="tab-players" data-tab="players"
+            aria-controls="panel-players" aria-selected="false" tabindex="-1">
+      Players <span class="tab-note" data-tab-note hidden></span>
+    </button>
   </div>
   <p class="status-line">
     <span id="status-badge" class="badge badge-unknown">connecting…</span>
@@ -568,6 +572,153 @@
       </div>
     </form>
   </section>
+</div>
+
+{# Players. The three list files belong to the game server and are the only record of
+   who is an admin, banned or permitted -- the manager keeps no copy of that. Every
+   answer from /api/players carries the table AND the raw text of all three files, so
+   the two views are always painted from the same read and cannot disagree. #}
+<div id="panel-players" class="tabpanel" role="tabpanel" aria-labelledby="tab-players"
+     tabindex="0" hidden>
+  <section class="card players-card">
+    <h2>
+      Players
+      <button id="btn-players-refresh" class="ghost small">Refresh</button>
+    </h2>
+
+    <p id="players-error" class="banner banner-error" role="alert" hidden></p>
+    {# Filled in by app.js from list_env_conflicts. A setting in valheim.env that the
+       game uses to rewrite a list on every start would quietly undo this whole panel,
+       and the undo happens later, on a Start, where nobody would connect the two. #}
+    <p id="players-env-conflict" class="banner banner-error" role="alert" hidden></p>
+
+    <p class="muted">
+      Everyone who has joined your server, and anyone already named in the game's
+      admin, banned or permitted lists. Tick a box to put a player on a list and untick
+      it to take them off &mdash; the change is saved to the game's own list straight
+      away. Times are on your server's clock, the same as the one at the top of the page.
+    </p>
+
+    {# The permitted list is a whitelist: switched on, it lets in ONLY the players on
+       it. Turning it on asks first (the dialog below); turning it off does not, since
+       that lets people in rather than keeping them out. #}
+    <div class="players-whitelist">
+      <label class="check">
+        <input type="checkbox" id="whitelist-toggle">
+        Only let players on the permitted list join
+      </label>
+      <p id="whitelist-note" class="muted small" role="status" aria-live="polite"></p>
+    </div>
+
+    <table class="settings" id="players-table">
+      <thead>
+        <tr>
+          <th scope="col">Player</th>
+          <th scope="col">First joined</th>
+          <th scope="col">Last seen</th>
+          <th scope="col">World</th>
+          <th scope="col" class="player-toggle">Admin</th>
+          <th scope="col" class="player-toggle">Banned</th>
+          <th scope="col" class="player-toggle">Permitted</th>
+        </tr>
+      </thead>
+      <tbody id="players-body"></tbody>
+    </table>
+    <p id="players-empty" class="muted small" hidden>
+      Nobody has joined yet, and the game's lists are empty. Players appear here the
+      first time they join.
+    </p>
+
+    <form id="player-add-form" class="player-add" autocomplete="off">
+      <label for="player-add-id">Add a player by ID</label>
+      <div class="controls">
+        <select id="player-add-kind" aria-label="Which list to add them to">
+          <option value="admin">to the admin list</option>
+          <option value="banned">to the banned list</option>
+          <option value="permitted">to the permitted list</option>
+        </select>
+        <input id="player-add-id" name="id" type="text" spellcheck="false"
+               placeholder="for example V_76561198012345678">
+        <button type="submit" id="btn-player-add" class="ghost">Add</button>
+      </div>
+      <p class="muted small">
+        For someone who has not joined yet, or whose row says their ID is needed. Every
+        player can see their own ID in the game by pressing <strong>F2</strong>. Copy it
+        exactly as it is shown there &mdash; capitals matter.
+      </p>
+    </form>
+
+    {# The escape hatch. Seeded with the file as the game reads it, minus the note the
+       game keeps at the top (the manager always keeps that, whatever is typed here). #}
+    <h3 class="players-subhead">The lists as text</h3>
+    <p class="muted small">
+      The same three lists, one player ID per line, exactly as the game reads them. Use
+      these for anything the table cannot do. A line that starts with
+      <code>// disabled-by-manager</code> is a player set aside while the permitted list
+      is switched off &mdash; the game ignores it, and switching the list back on puts
+      them back.
+    </p>
+    <details class="raw-editor" id="raw-admin">
+      <summary>Admin list</summary>
+      <textarea id="raw-admin-text" rows="6" spellcheck="false"
+                aria-label="The admin list, one player ID per line"></textarea>
+      <p id="raw-admin-stale" class="muted small" hidden>
+        The list has changed since you started typing. Your version is still here;
+        <strong>Undo my changes</strong> shows the list as it is now.
+      </p>
+      <div class="controls">
+        <button type="button" class="primary" data-raw-save="admin">Save</button>
+        <button type="button" class="ghost" data-raw-reset="admin">Undo my changes</button>
+      </div>
+    </details>
+    <details class="raw-editor" id="raw-banned">
+      <summary>Banned list</summary>
+      <textarea id="raw-banned-text" rows="6" spellcheck="false"
+                aria-label="The banned list, one player ID per line"></textarea>
+      <p id="raw-banned-stale" class="muted small" hidden>
+        The list has changed since you started typing. Your version is still here;
+        <strong>Undo my changes</strong> shows the list as it is now.
+      </p>
+      <div class="controls">
+        <button type="button" class="primary" data-raw-save="banned">Save</button>
+        <button type="button" class="ghost" data-raw-reset="banned">Undo my changes</button>
+      </div>
+    </details>
+    <details class="raw-editor" id="raw-permitted">
+      <summary>Permitted list</summary>
+      <textarea id="raw-permitted-text" rows="6" spellcheck="false"
+                aria-label="The permitted list, one player ID per line"></textarea>
+      <p id="raw-permitted-stale" class="muted small" hidden>
+        The list has changed since you started typing. Your version is still here;
+        <strong>Undo my changes</strong> shows the list as it is now.
+      </p>
+      <div class="controls">
+        <button type="button" class="primary" data-raw-save="permitted">Save</button>
+        <button type="button" class="ghost" data-raw-reset="permitted">Undo my changes</button>
+      </div>
+    </details>
+  </section>
+
+  {# Switching the permitted list on can lock the whole group out, so it asks first,
+     names who WILL still be let in, and lands on Cancel. The manager cannot tell which
+     player is the operator, so it cannot keep them on the list for them. #}
+  <dialog id="whitelist-dialog" class="confirm" aria-labelledby="whitelist-dialog-title">
+    <h2 id="whitelist-dialog-title">Turn the permitted list on?</h2>
+    <p class="banner banner-error">
+      <strong>Only the players listed here will be able to join.</strong> Everyone else
+      is turned away when they try, even with the right join password.
+    </p>
+    <p class="muted small" id="whitelist-dialog-count"></p>
+    <ul id="whitelist-dialog-list" class="whitelist-list"></ul>
+    <p class="muted small">
+      The manager cannot tell which of these players is you, so it cannot keep you on
+      the list for you. Check you are on it before you go on.
+    </p>
+    <div class="controls">
+      <button type="button" id="btn-whitelist-cancel" class="ghost" autofocus>Cancel</button>
+      <button type="button" id="btn-whitelist-confirm" class="danger">Turn it on</button>
+    </div>
+  </dialog>
 </div>
 {% endblock %}
 

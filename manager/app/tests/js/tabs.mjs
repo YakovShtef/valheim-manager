@@ -30,7 +30,7 @@ const CSS = readFileSync(cssPath, "utf8");
 // Leaving ~20 windows open meant this process finished its work and then never
 // exited, so pytest killed it at its timeout -- once per test, 25 times.
 const PAGES = [];
-const PANELS = ["panel-console", "panel-settings", "panel-worlds", "panel-mods"];
+const PANELS = ["panel-console", "panel-settings", "panel-worlds", "panel-mods", "panel-players"];
 const SCROLL_HEIGHT = 9999;
 const CLIENT_HEIGHT = 300;
 
@@ -42,6 +42,34 @@ const SETTINGS_ROWS = [
   // A key the manager has no plain name for: it arrives with its own name as label.
   { key: "MY_OWN_KEY", label: "MY_OWN_KEY", value: "42", secret: false },
 ];
+
+// The shape /api/players answers with (main.py _roster_payload). Three rows, one of
+// each kind the table has to draw: a named player who has joined, a player whose log
+// ID could not be converted to the file form (file_id null), and an ID that is only in
+// a file and has never joined. The permitted list is OFF: its entries are parked.
+const RAGNAR = "V_76561198012345678";
+const PLAYERS = (over = {}) => ({
+  players: [
+    { id: RAGNAR, platform_id: "76561198012345678", file_id: RAGNAR, name: "Ragnar",
+      first_seen: 1699990000, last_seen: 1700000040, last_world: "Dedicated", seen: true,
+      is_admin: true, is_banned: false, is_permitted: false },
+    { id: "xbox-2535411", platform_id: "xbox-2535411", file_id: null, name: null,
+      first_seen: 1699000000, last_seen: 1699500000, last_world: "Dedicated", seen: true,
+      is_admin: false, is_banned: false, is_permitted: false },
+    { id: "V_1111", platform_id: null, file_id: "V_1111", name: null,
+      first_seen: null, last_seen: null, last_world: null, seen: false,
+      is_admin: false, is_banned: true, is_permitted: false },
+  ],
+  lists: {
+    admin: { ids: [RAGNAR], comments: ["// List admin players ID  ONE per line"], parked: [] },
+    banned: { ids: ["V_1111"], comments: ["// List banned players ID  ONE per line"], parked: [] },
+    permitted: { ids: [], comments: ["// List permitted players ID ONE per line"],
+                 parked: [RAGNAR, "V_2222"] },
+  },
+  whitelist_enabled: false,
+  list_env_conflicts: [],
+  ...over,
+});
 
 function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
   const dom = new JSDOM(html, { url: "http://localhost/", runScripts: "outside-only" });
@@ -93,8 +121,27 @@ function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
     worlds_error: null,
     current: "Dedicated",
   };
-  win.fetch = function (path) {
-    fetches.push(String(path));
+  // The players routes answer with the roster; a case can swap in its own answer per
+  // request (a refusal, a file that changed elsewhere) with `answerPlayers`.
+  const posts = [];
+  let playersPayload = PLAYERS();
+  let playersAnswer = null;
+  win.fetch = function (path, init) {
+    const url = String(path);
+    fetches.push(url);
+    if (init && init.method === "POST") {
+      let body = null;
+      try { body = JSON.parse(init.body); } catch (err) { body = null; }  // FormData
+      posts.push({ path: url, body });
+    }
+    if (url.indexOf("/api/players") === 0) {
+      const custom = playersAnswer ? playersAnswer(url, init) : null;
+      const answer = custom || { status: 200, payload: playersPayload };
+      return Promise.resolve({
+        ok: answer.status < 400, status: answer.status,
+        json: () => Promise.resolve(answer.payload),
+      });
+    }
     return Promise.resolve({
       ok: true, status: 200, json: () => Promise.resolve(worldsPayload),
     });
@@ -144,8 +191,10 @@ function makePage({ stored = null, breakStorage = false, html = HTML } = {}) {
   });
 
   return {
-    win, doc, fetches, xhrs, sockets, scrollWrites, push, status,
+    win, doc, fetches, posts, xhrs, sockets, scrollWrites, push, status,
     setWorlds: (payload) => { worldsPayload = payload; },
+    setPlayers: (payload) => { playersPayload = payload; },
+    answerPlayers: (fn) => { playersAnswer = fn; },
     // Ancestor-aware on purpose. getComputedStyle reports the ELEMENT's own display,
     // so a panel nested inside another panel reads as "block" while being completely
     // invisible -- which is exactly how a fourth panel once shipped inside the third.
@@ -344,10 +393,11 @@ check("the_keyboard_walks_the_strip", () => {
   eq(step("ArrowRight").tab, "settings", "ArrowRight from console");
   eq(step("ArrowRight").tab, "worlds", "ArrowRight from settings");
   eq(step("ArrowRight").tab, "mods", "ArrowRight from worlds");
+  eq(step("ArrowRight").tab, "players", "ArrowRight from mods");
   eq(step("ArrowRight").tab, "console", "ArrowRight wraps past the last tab");
-  eq(step("ArrowLeft").tab, "mods", "ArrowLeft wraps past the first tab");
+  eq(step("ArrowLeft").tab, "players", "ArrowLeft wraps past the first tab");
   eq(step("Home").tab, "console", "Home");
-  eq(step("End").tab, "mods", "End");
+  eq(step("End").tab, "players", "End");
   eq(p.stops().length, 1, "more than one tab stop after moving");
 
   p.tab("settings").focus();
@@ -362,7 +412,7 @@ check("the_keyboard_walks_the_strip", () => {
 
 check("exactly_one_panel_is_ever_visible", () => {
   const p = makePage();
-  for (const name of ["settings", "worlds", "mods", "console", "mods", "settings"]) {
+  for (const name of ["settings", "worlds", "mods", "players", "console", "players", "settings"]) {
     p.tab(name).click();
     eq(p.shown(), ["panel-" + name], `visible panels after selecting ${name}`);
   }
@@ -512,7 +562,7 @@ check("every_panel_can_take_focus", () => {
   // deliberately left open to show.
   const p = makePage();
   p.status("ready");
-  for (const name of ["console", "settings", "worlds", "mods"]) {
+  for (const name of ["console", "settings", "worlds", "mods", "players"]) {
     p.tab(name).click();
     const panel = p.doc.getElementById("panel-" + name);
     eq(panel.getAttribute("tabindex"), "0", `${name} panel is not focusable`);
@@ -665,6 +715,231 @@ check("saving_posts_both_the_mode_and_the_time", async () => {
   eq(post.body.mode, "daily", "posted mode");
   eq(post.body.daily_time, "01:30", "posted time");
   eq(post.body.interval_hours, 24, "the interval carried alongside it");
+});
+
+// ------------------------------------------------------------ the players tab
+//
+// The roster is fed by /api/players, read once when the page loads, so every case
+// here lets that first read land before looking.
+
+const playersPage = async (payload, opts = {}) => {
+  const p = makePage(opts);
+  if (payload) { p.setPlayers(payload); }
+  // The page read the roster on load; with a custom payload, read it again.
+  if (payload) { p.doc.getElementById("btn-players-refresh").click(); }
+  await p.settle();
+  await p.settle();
+  return p;
+};
+const rows = (p) => [...p.doc.querySelectorAll("#players-body tr")];
+const box = (p, row, kind) => rows(p)[row].querySelector(`input[data-player-list="${kind}"]`);
+const tick = (p, node, on) => {
+  node.checked = on;
+  node.dispatchEvent(new p.win.Event("change", { bubbles: true }));
+};
+
+check("the_players_tab_shows_its_panel", async () => {
+  const p = await playersPage(null);
+  p.tab("players").click();
+  eq(p.selected(), ["players"], "selected tab");
+  eq(p.shown(), ["panel-players"], "visible panels");
+  eq(rows(p).length, 3, "roster rows drawn from /api/players");
+  eq(rows(p)[0].children[0].textContent.indexOf("Ragnar") !== -1, true, "the name is shown");
+});
+
+check("a_roster_time_reads_on_the_server_clock_whatever_the_browser_zone", async () => {
+  // The instant: 2023-11-14 22:14:00 UTC. The server is at +05:30, so its wall clock
+  // reads Wed 15 Nov 03:44. The page is then run under four browser zones, none of
+  // them +05:30 -- a renderer reading local time would answer differently in each.
+  const EPOCH = 1700000040;
+  const OFFSET = 330;
+  const WANT = "Wed 15 Nov 03:44";
+  const ZONES = ["UTC", "Pacific/Chatham", "America/St_Johns", "America/Los_Angeles"];
+  const before = process.env.TZ;
+  const localHours = [];
+  try {
+    for (const zone of ZONES) {
+      process.env.TZ = zone;
+      const p = makePage();
+      // Proof the zone actually changed inside the page, or this case proves nothing.
+      localHours.push(new p.win.Date(EPOCH * 1000).getHours());
+      p.push({
+        type: "status",
+        status: { phase: "ready", message: "ready", container_state: "running",
+                  container_exists: true, started_at: null },
+        server_clock: { epoch: EPOCH, offset_minutes: OFFSET, zone: "Test/Zone" },
+        settings: SETTINGS_ROWS, settings_error: null, modifiers: {},
+      });
+      p.setPlayers(PLAYERS());
+      p.doc.getElementById("btn-players-refresh").click();
+      await p.settle();
+      await p.settle();
+
+      const cells = rows(p)[0].children;
+      eq(cells[2].textContent, WANT, `last seen under browser zone ${zone}`);
+      eq(rows(p)[2].children[2].textContent, "never", `a never-seen player under ${zone}`);
+      // ...and it is the wall time the header clock shows for the same instant.
+      const time = p.doc.getElementById("clock-time").textContent;
+      const date = p.doc.getElementById("clock-date").textContent;
+      eq(WANT, date.split(" ").slice(0, 3).join(" ") + " " + time.slice(0, 5),
+         `the roster and the header clock disagree under ${zone}`);
+    }
+  } finally {
+    if (before === undefined) { delete process.env.TZ; } else { process.env.TZ = before; }
+  }
+  eq(new Set(localHours).size > 1, true,
+     "precondition: the browser zone never changed, so the zone-independence is untested");
+});
+
+check("the_permitted_editor_keeps_parked_players_as_disabled_lines", async () => {
+  // While the list is off every entry is parked, and `ids` is empty. A box seeded from
+  // `ids` alone would be empty, and saving it would erase everyone on the list.
+  const p = await playersPage(null);
+  const permitted = p.doc.getElementById("raw-permitted-text");
+  eq(permitted.value,
+     `// disabled-by-manager ${RAGNAR}\n// disabled-by-manager V_2222\n`,
+     "the permitted editor");
+  eq(permitted.value.indexOf("List permitted") === -1, true, "the game's header note is shown");
+  eq(p.doc.getElementById("raw-admin-text").value, `${RAGNAR}\n`, "the admin editor");
+
+  // Saving it untouched writes back exactly what the file holds.
+  p.doc.querySelector('[data-raw-save="permitted"]').click();
+  await p.settle();
+  const saved = p.posts.filter((x) => x.path === "/api/players/raw");
+  eq(saved.length, 1, "Save did not post the permitted list");
+  eq(saved[0].body, { kind: "permitted", text: permitted.value }, "what Save posted");
+});
+
+check("nothing_on_the_page_offers_a_kick", async () => {
+  // Vanilla Valheim has no channel for the manager to send one. Nothing may suggest
+  // otherwise -- not a button, not a disabled placeholder, not a word of copy.
+  const p = await playersPage(null);
+  p.tab("players").click();
+  eq(/kick/i.test(p.doc.documentElement.textContent), false, "the page's text mentions a kick");
+  for (const node of p.doc.querySelectorAll("*")) {
+    for (const attr of node.attributes) {
+      if (/kick/i.test(attr.value)) {
+        throw new Error(`<${node.tagName.toLowerCase()} ${attr.name}="${attr.value}"> mentions a kick`);
+      }
+    }
+  }
+});
+
+check("a_row_without_a_usable_id_cannot_be_ticked_and_says_why", async () => {
+  const p = await playersPage(null);
+  const row = rows(p)[1];
+  const boxes = [...row.querySelectorAll("input[data-player-list]")];
+  eq(boxes.length, 3, "the row has its three boxes");
+  eq(boxes.map((b) => b.disabled), [true, true, true], "the boxes are live");
+  const note = p.doc.getElementById(boxes[0].getAttribute("aria-describedby") || "-");
+  eq(!!note && row.contains(note), true, "the explanation is not on the row");
+  eq(note.textContent.indexOf("F2") !== -1, true, "the explanation does not say where the ID is: " + note.textContent);
+
+  // Forced anyway: nothing goes out, and the box goes back.
+  tick(p, boxes[0], true);
+  await p.settle();
+  eq(p.posts, [], "a row with no ID sent something");
+  eq(box(p, 1, "admin").checked, false, "the box stayed ticked");
+});
+
+check("a_refused_tick_is_put_back_from_a_fresh_read", async () => {
+  const p = await playersPage(null);
+  const refusal = "That ID contains a newline. Add it by hand from the in-game F2 panel.";
+  // The file changed elsewhere since the page last read it: the fresh read is the only
+  // place the right answer can come from.
+  const fresh = PLAYERS();
+  fresh.players[0] = { ...fresh.players[0], is_admin: false };
+  p.answerPlayers((url, init) => {
+    if (url === "/api/players/list") { return { status: 400, payload: { error: refusal } }; }
+    if (!init || !init.method) { return { status: 200, payload: fresh }; }
+    return null;
+  });
+  const before = p.fetches.length;
+  tick(p, box(p, 0, "banned"), true);
+  await p.settle();
+  await p.settle();
+
+  eq(p.doc.getElementById("players-error").hidden, false, "the refusal is not shown");
+  eq(p.doc.getElementById("players-error").textContent, refusal, "the refusal was reworded");
+  eq(box(p, 0, "banned").checked, false, "the refused tick is still showing");
+  eq(p.fetches.slice(before), ["/api/players/list", "/api/players"], "requests after the refusal");
+  eq(box(p, 0, "admin").checked, false, "the table was not repainted from the fresh read");
+});
+
+check("turning_the_permitted_list_on_asks_first", async () => {
+  // jsdom has no <dialog>, so this drives the fallback -- the path any browser without
+  // one takes. The rule is the same either way: ask, and a no sends nothing.
+  const p = await playersPage(null);
+  eq(typeof p.doc.getElementById("whitelist-dialog").showModal, "undefined",
+     "precondition: this environment has no <dialog>, so the fallback is under test");
+  const toggle = p.doc.getElementById("whitelist-toggle");
+  const asked = [];
+  p.win.confirm = (text) => { asked.push(text); return false; };
+  tick(p, toggle, true);
+  await p.settle();
+  eq(asked.length, 1, "switching it on did not ask");
+  eq(asked[0].indexOf("Ragnar") !== -1, true, "the question does not say who is on the list: " + asked[0]);
+  eq(asked[0].indexOf("Everyone else is turned away") !== -1, true, "the question does not say what happens");
+  eq(p.posts, [], "saying no still switched it on");
+  eq(toggle.checked, false, "the switch shows on after a no");
+
+  p.win.confirm = () => true;
+  tick(p, toggle, true);
+  await p.settle();
+  eq(p.posts.map((x) => [x.path, x.body]), [["/api/players/whitelist", { enabled: true }]],
+     "saying yes did not send exactly one switch-on");
+
+  // Off is the safe direction: no question.
+  const onPage = await playersPage(PLAYERS({ whitelist_enabled: true }));
+  const off = [];
+  onPage.win.confirm = (text) => { off.push(text); return false; };
+  tick(onPage, onPage.doc.getElementById("whitelist-toggle"), false);
+  await onPage.settle();
+  eq(off, [], "switching it off asked");
+  eq(onPage.posts.map((x) => x.body), [{ enabled: false }], "switching it off was not sent");
+
+  // The dialog itself, for browsers that have one: Cancel is where focus lands.
+  eq(p.doc.getElementById("btn-whitelist-cancel").hasAttribute("autofocus"), true,
+     "Cancel is not what focus lands on");
+  eq(p.doc.getElementById("btn-whitelist-confirm").hasAttribute("autofocus"), false,
+     "the switch-on button takes focus");
+});
+
+check("ticking_permitted_while_the_list_is_off_never_switches_it_on", async () => {
+  // One active line in permittedlist.txt locks out everyone not on it. With the list
+  // off, a tick must add the player among the parked entries -- never write the line.
+  const p = await playersPage(null);
+  tick(p, box(p, 2, "permitted"), true);
+  await p.settle();
+  await p.settle();
+  eq(p.posts.filter((x) => x.path === "/api/players/list"), [], "the tick wrote an active line");
+  const raw = p.posts.filter((x) => x.path === "/api/players/raw");
+  eq(raw.length, 1, "the tick was not saved");
+  const lines = raw[0].body.text.split("\n").filter((l) => l.trim());
+  eq(lines.filter((l) => !l.startsWith("//")), [], "the saved list has an active line in it");
+  eq(lines, [`// disabled-by-manager ${RAGNAR}`, "// disabled-by-manager V_2222",
+             "// disabled-by-manager V_1111"], "the parked entries after the tick");
+
+  // Adding by ID to a list that is off would do the same, so it is refused here.
+  const before = p.posts.length;
+  p.doc.getElementById("player-add-kind").value = "permitted";
+  p.doc.getElementById("player-add-id").value = "V_3333";
+  p.doc.getElementById("player-add-form")
+    .dispatchEvent(new p.win.Event("submit", { bubbles: true, cancelable: true }));
+  await p.settle();
+  eq(p.posts.slice(before), [], "adding by ID switched the list on");
+  eq(p.doc.getElementById("players-error").hidden, false, "the refusal is not explained");
+});
+
+check("a_list_variable_in_valheim_env_is_named_in_a_warning", async () => {
+  const quiet = await playersPage(null);
+  eq(quiet.doc.getElementById("players-env-conflict").hidden, true, "a warning with nothing set");
+
+  const p = await playersPage(PLAYERS({ list_env_conflicts: ["ADMINLIST_IDS"] }));
+  const banner = p.doc.getElementById("players-env-conflict");
+  eq(banner.hidden, false, "the warning is not shown");
+  eq(banner.textContent.indexOf("ADMINLIST_IDS") !== -1, true, "the warning does not name the variable");
+  eq(banner.textContent.indexOf("valheim.env") !== -1, true, "the warning does not say where it is set");
 });
 
 // -------------------------------------------------------------------- runner
