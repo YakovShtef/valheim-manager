@@ -371,6 +371,111 @@ def test_an_unwritable_list_is_a_500_not_a_400(client_with_roster):
     assert response.json()["error"] == message
 
 
+def test_a_file_id_with_an_embedded_newline_is_refused(client_with_roster):
+    """The exact injection this check exists for: a newline inside ``file_id``
+    would, once written, read back as a second line -- here, one that parses as
+    a ``// disabled-by-manager`` comment and silently un-admins someone else.
+    """
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/list",
+        json={
+            "kind": "admin",
+            "file_id": "V_1\n// disabled-by-manager V_OTHER",
+            "member": True,
+        },
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_a_file_id_with_a_carriage_return_is_refused(client_with_roster):
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": "V_1\rV_2", "member": True},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_a_file_id_with_a_tab_is_refused(client_with_roster):
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": "V_1\tV_2", "member": True},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_a_file_id_starting_with_a_comment_marker_is_refused(client_with_roster):
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": "// V_1", "member": True},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_member_as_a_string_is_refused_rather_than_coerced(client_with_roster):
+    """``bool("false")`` is ``True`` -- a truthiness check on ``member`` would let
+    the string ``"false"`` silently ADD the player instead of refusing.
+    """
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": "V_7000", "member": "false"},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_a_missing_member_is_refused_not_treated_as_removal(client_with_roster):
+    client, tmp = client_with_roster
+    before = _list_files_snapshot(tmp)
+    response = client.post(
+        "/api/players/list",
+        json={"kind": "admin", "file_id": "V_7000"},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 400
+    assert _list_files_snapshot(tmp) == before
+
+
+def test_a_file_only_bare_steam_id_can_still_be_removed(client_with_roster):
+    """Positive control: the line-safety check must not become a second shape
+    check. A row that exists only because someone hand-typed a bare SteamID
+    into the file before this feature existed -- exactly the id
+    ``normalise_typed_id`` would refuse on ``/add`` -- must still be removable
+    here, since removing exactly that kind of malformed row is the point.
+    """
+    client, tmp = client_with_roster
+    bare_id = "76561198000000099"
+    banned_path = tmp / "config" / "bannedlist.txt"
+    banned_path.write_text(
+        banned_path.read_text(encoding="utf-8") + f"{bare_id}\n", encoding="utf-8"
+    )
+    body = client.post(
+        "/api/players/list",
+        json={"kind": "banned", "file_id": bare_id, "member": False},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert bare_id not in body["lists"]["banned"]["ids"]
+    assert bare_id not in banned_path.read_text(encoding="utf-8")
+
+
 # ---------------------------------------------------- POST /api/players/add
 
 
