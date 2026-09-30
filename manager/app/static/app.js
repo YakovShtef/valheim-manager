@@ -126,6 +126,7 @@
     playersEmpty: document.getElementById("players-empty"),
     whitelistToggle: document.getElementById("whitelist-toggle"),
     whitelistNote: document.getElementById("whitelist-note"),
+    permittedNote: document.getElementById("permitted-note"),
     whitelistDialog: document.getElementById("whitelist-dialog"),
     whitelistCount: document.getElementById("whitelist-dialog-count"),
     whitelistList: document.getElementById("whitelist-dialog-list"),
@@ -1977,7 +1978,9 @@
   // Two rules run through everything below. A control must never show a state the
   // file does not have -- a refused change repaints from a fresh read. And the
   // permitted list is a whitelist: while it holds even one active line, only the
-  // players on it can join, so nothing here may switch it on without asking.
+  // players on it can join. The manager enforces that for the table and add-by-ID
+  // (a permitted add while the list is off is parked, never written as an active
+  // line); the raw editor writes exactly what is typed, so it asks here first.
 
   var PLAYER_LISTS = ["admin", "banned", "permitted"];
   var PLAYER_LIST_LABELS = { admin: "Admin", banned: "Banned", permitted: "Permitted" };
@@ -2039,13 +2042,9 @@
     };
   }
 
-  // Whether a row's box is ticked. While the permitted list is off every entry on it
-  // is parked, and the file's `ids` are empty -- so the tick there means "on the list,
-  // ready for when it is switched on", which is the parked set.
+  // Whether a row's box is ticked. The manager's is_permitted already counts a parked
+  // entry as on the list -- ready, not in force -- so every column reads the same way.
   function onList(kind, row) {
-    if (kind === "permitted" && lastPlayers && !lastPlayers.whitelistEnabled) {
-      return !!row.file_id && lastPlayers.lists.permitted.parked.indexOf(row.file_id) !== -1;
-    }
     return !!row["is_" + kind];
   }
 
@@ -2081,8 +2080,10 @@
     el.whitelistToggle.checked = lastPlayers.whitelistEnabled;
     el.whitelistNote.textContent = lastPlayers.whitelistEnabled
       ? "On: only players ticked under Permitted can join. Everyone else is turned away."
-      : "Off: anyone with the join password can join. Ticks under Permitted are kept " +
-        "ready for when you switch it on.";
+      : "Off: anyone with the join password can join.";
+    // Beside the column itself, because that is where the worry arises: a tick there
+    // looks like it might shut people out, and while the list is off it cannot.
+    el.permittedNote.hidden = lastPlayers.whitelistEnabled;
 
     renderEnvConflicts(lastPlayers.conflicts);
     for (var k = 0; k < PLAYER_LISTS.length; k++) { seedRawEditor(PLAYER_LISTS[k]); }
@@ -2285,42 +2286,6 @@
     });
   }
 
-  // Ticking Permitted while the list is switched off. Through the ordinary route that
-  // would write an active line -- and one active line switches the whole whitelist ON,
-  // with only that player allowed in and nobody asked. So the tick adds or removes the
-  // player among the PARKED entries instead, ready for when the list is turned on.
-  // Built from a fresh read, not from the table as painted, so an edit made elsewhere
-  // in the meantime is not written over.
-  function setParked(fileId, member) {
-    if (/\s/.test(fileId)) {
-      showPlayersError("That ID has a space in it, so it cannot be set aside from the " +
-        "table. Change it in the permitted list as text, below.");
-      repaintLastKnown();
-      return;
-    }
-    playersBusy = true;
-    syncPlayerControls();
-    playersRequest("/api/players").then(function (payload) {
-      playersBusy = false;
-      if (!payload) { syncPlayerControls(); return; }
-      var list = normaliseList(payload.lists && payload.lists.permitted);
-      if (list.ids.length) {
-        // Switched on in the meantime: the ordinary route is the right one now.
-        sendPlayers("/api/players/list", { kind: "permitted", file_id: fileId, member: member });
-        return;
-      }
-      var parked = list.parked.filter(function (id) { return id !== fileId; });
-      if (member) { parked.push(fileId); }
-      sendPlayers("/api/players/raw", {
-        kind: "permitted", text: rawText({ ids: [], parked: parked })
-      });
-    }).catch(function (err) {
-      playersBusy = false;
-      showPlayersError(errorText(err));
-      repaintLastKnown();
-    });
-  }
-
   function onPlayerToggle(event) {
     var box = event.target;
     if (!box || !box.getAttribute || !box.getAttribute("data-player-list")) { return; }
@@ -2333,12 +2298,7 @@
       repaintLastKnown();
       return;
     }
-    var member = box.checked === true;
-    if (kind === "permitted" && !lastPlayers.whitelistEnabled) {
-      setParked(fileId, member);
-      return;
-    }
-    sendPlayers("/api/players/list", { kind: kind, file_id: fileId, member: member });
+    sendPlayers("/api/players/list", { kind: kind, file_id: fileId, member: box.checked === true });
   }
 
   // Who the permitted list would let in, by name where one is known.
@@ -2445,17 +2405,7 @@
 
   function addPlayer() {
     showPlayersError("");
-    var kind = el.playerAddKind.value;
-    if (kind === "permitted" && lastPlayers && !lastPlayers.whitelistEnabled) {
-      // Adding by ID writes an active line, which would switch the list on with only
-      // this player allowed in. Ticking a row parks them instead (see setParked).
-      showPlayersError("The permitted list is switched off, so a player cannot be " +
-        "added to it by ID right now: that would switch it straight on with only them " +
-        "allowed in. Tick Permitted on their row instead (anyone who has joined is in " +
-        "the table), or switch the list on first and then add them.");
-      return;
-    }
-    sendPlayers("/api/players/add", { kind: kind, id: el.playerAddId.value }, function () {
+    sendPlayers("/api/players/add", { kind: el.playerAddKind.value, id: el.playerAddId.value }, function () {
       el.playerAddId.value = "";
     });
   }
