@@ -196,6 +196,7 @@ h2 {
 #panel-settings[hidden] { display: none; }
 #panel-worlds[hidden] { display: none; }
 #panel-mods[hidden] { display: none; }
+#panel-players[hidden] { display: none; }
 
 /* -------------------------------------------------------------- status line */
 
@@ -553,6 +554,56 @@ dialog.confirm .controls { margin-top: var(--s5); justify-content: flex-end; }
   background: var(--danger); color: #1a0d0a;
 }
 
+/* ---------------------------------------------------------- the players panel */
+
+#players-table[hidden] { display: none; }
+.players-card .settings td.player-name { font-weight: 600; }
+/* The id under a name is a value to copy, not prose, so it is the one mono cell. */
+.players-card .player-id { font-family: var(--mono); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.players-card .player-note { font-weight: 400; margin-top: 2px; max-width: 34ch; }
+.players-card .settings td.player-seen { white-space: nowrap; }
+/* The three toggles are a column of ticks people scan down, so they line up. */
+.players-card .settings .player-toggle { text-align: center; width: 1%; white-space: nowrap; }
+.players-card .settings td.player-toggle input[type="checkbox"]:disabled { cursor: not-allowed; }
+/* Ticked while the permitted list is switched off: kept ready, not in force. */
+.players-card .settings td.player-toggle.is-parked input[type="checkbox"] { opacity: .55; }
+
+.players-whitelist {
+  margin: var(--s4) 0; padding: var(--s3) var(--s4);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  background: var(--surface-2);
+}
+.players-whitelist .check {
+  display: flex; align-items: center; gap: var(--s2);
+  font-size: 13.5px; color: var(--ink);
+}
+.players-whitelist p { margin: var(--s1) 0 0; }
+
+.player-add { margin: var(--s5) 0 0; }
+.player-add label { display: block; margin-bottom: 6px; color: var(--ink-dim); font-size: 12.5px; }
+.player-add .controls { gap: var(--s2); margin-top: 0; }
+.player-add input { flex: 0 1 320px; min-width: 240px; }
+.player-add p.small { margin: var(--s2) 0 0; }
+
+.players-subhead { font-size: 13px; font-weight: 620; margin: var(--s6) 0 var(--s1); }
+.raw-editor {
+  margin-top: var(--s2);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  background: var(--surface-2);
+  padding: 0 var(--s4);
+}
+.raw-editor summary { cursor: pointer; padding: var(--s3) 0; font-size: 13.5px; font-weight: 550; }
+.raw-editor[open] { padding-bottom: var(--s4); }
+.raw-editor textarea {
+  display: block; width: 100%; resize: vertical;
+  font: 12.5px/1.6 var(--mono);
+}
+.raw-editor .controls { margin-top: var(--s3); }
+.raw-editor p.small { margin: var(--s2) 0 0; }
+
+.whitelist-list { margin: 0 0 var(--s3); padding-left: var(--s5); font-size: 13.5px; }
+.whitelist-list .player-id { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); }
+
 /* --------------------------------------------------------------- the console */
 
 .console-card h2 { margin-bottom: var(--s3); }
@@ -651,4 +702,9 @@ dialog.confirm .controls { margin-top: var(--s5); justify-content: flex-end; }
   .worlds-card .settings td.world-action button,
   .mods-card .settings td.world-action button { margin: 2px 0 2px var(--s1); }
   .settings th, .settings td { padding: var(--s2) var(--s1); }
+
+  /* Seven columns do not fit a phone. The roster scrolls sideways inside its card
+     rather than pushing the whole page wider. */
+  .players-card .settings { display: block; overflow-x: auto; }
+  .player-add input { min-width: 0; }
 }

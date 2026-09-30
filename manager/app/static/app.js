@@ -117,7 +117,24 @@
     stop: document.getElementById("btn-stop"),
     restart: document.getElementById("btn-restart"),
     force: document.getElementById("btn-force"),
-    clear: document.getElementById("btn-clear")
+    clear: document.getElementById("btn-clear"),
+    playersRefresh: document.getElementById("btn-players-refresh"),
+    playersError: document.getElementById("players-error"),
+    playersEnvConflict: document.getElementById("players-env-conflict"),
+    playersTable: document.getElementById("players-table"),
+    playersBody: document.getElementById("players-body"),
+    playersEmpty: document.getElementById("players-empty"),
+    whitelistToggle: document.getElementById("whitelist-toggle"),
+    whitelistNote: document.getElementById("whitelist-note"),
+    whitelistDialog: document.getElementById("whitelist-dialog"),
+    whitelistCount: document.getElementById("whitelist-dialog-count"),
+    whitelistList: document.getElementById("whitelist-dialog-list"),
+    whitelistConfirm: document.getElementById("btn-whitelist-confirm"),
+    whitelistCancel: document.getElementById("btn-whitelist-cancel"),
+    playerAddForm: document.getElementById("player-add-form"),
+    playerAddKind: document.getElementById("player-add-kind"),
+    playerAddId: document.getElementById("player-add-id"),
+    playerAddButton: document.getElementById("btn-player-add")
   };
 
   // What the operator sees on the badge. Plain words: "no container" and "pulling
@@ -232,6 +249,9 @@
     // timer, and Back up on a world row -- so it is re-read on the way in rather
     // than left as it was whenever the tab was last open.
     if (tabName(chosen) === "worlds" && backupsLoaded) { refreshBackups(); }
+    // The roster moves on its own -- the watcher records every join and leave -- so a
+    // "last seen" read when the tab was last open is stale by the time it is back.
+    if (tabName(chosen) === "players" && playersLoaded && !playersBusy) { refreshPlayers(); }
     // A hidden console cannot scroll. Every scroll metric reads 0 on a display:none
     // box, so append()'s follow-scroll is a no-op for every line that arrives while
     // another tab is up, and the browser restores the OLD offset when the panel comes
@@ -1947,6 +1967,547 @@
     if (uploadRequest) { uploadRequest.abort(); }
   }
 
+  // ---------------------------------------------------------------- players
+  //
+  // The three list files belong to the game server, and they are the only record of
+  // who is an admin, banned or permitted: the manager never keeps a copy. Every answer
+  // from /api/players carries the roster AND each file's contents, so the table and
+  // the raw editors are always painted from one read and cannot disagree.
+  //
+  // Two rules run through everything below. A control must never show a state the
+  // file does not have -- a refused change repaints from a fresh read. And the
+  // permitted list is a whitelist: while it holds even one active line, only the
+  // players on it can join, so nothing here may switch it on without asking.
+
+  var PLAYER_LISTS = ["admin", "banned", "permitted"];
+  var PLAYER_LIST_LABELS = { admin: "Admin", banned: "Banned", permitted: "Permitted" };
+  // How a parked entry is written. The manager's own marker, parsed back by
+  // permission_lists._PARKED_RE; the game reads it as a comment and ignores it.
+  var PARKED_PREFIX = "// disabled-by-manager ";
+
+  var lastPlayers = null;
+  var playersLoaded = false;
+  var playersBusy = false;
+  // What the whitelist dialog does if the operator says yes. Read on confirm, and
+  // cleared by every way out of the dialog, so a stale question can never be answered.
+  var pendingWhitelist = null;
+  // Per raw editor: the text it was last seeded with, and whether the operator has
+  // typed in it since. A refresh must never throw away what someone is typing.
+  var rawSeeds = {};
+  var rawDirty = {};
+
+  // The server's wall clock for a stored instant: the same anchor and the same trick
+  // as paintClock() and formatTaken(), so a roster time and the header clock agree
+  // whatever zone the browser is in. `null` is a player the log has never shown.
+  function formatSeen(epoch) {
+    if (epoch === null || epoch === undefined) { return "never"; }
+    return formatTaken(epoch);
+  }
+
+  function rawEditor(kind) { return document.getElementById("raw-" + kind + "-text"); }
+
+  // A list as the raw editor shows it: parked entries as the marker lines the manager
+  // writes, then the active ids. Lossless on purpose -- /api/players/raw writes the
+  // parked entries it parses out of the submitted text, so a box seeded from the ids
+  // alone would, while the permitted list is off, save as an empty list and erase
+  // everyone on it. The game's own header note is not shown; the manager keeps it.
+  function rawText(list) {
+    var lines = [];
+    var i;
+    for (i = 0; i < list.parked.length; i++) { lines.push(PARKED_PREFIX + list.parked[i]); }
+    for (i = 0; i < list.ids.length; i++) { lines.push(list.ids[i]); }
+    return lines.length ? lines.join("\n") + "\n" : "";
+  }
+
+  // The lines of raw text the game would act on: anything not blank and not a
+  // comment. The same split permission_lists.parse_list_text makes.
+  function activeLines(text) {
+    var out = [];
+    var lines = String(text || "").split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (line && line.indexOf("//") !== 0) { out.push(line); }
+    }
+    return out;
+  }
+
+  function normaliseList(list) {
+    var source = list || {};
+    return {
+      ids: Array.isArray(source.ids) ? source.ids.slice() : [],
+      parked: Array.isArray(source.parked) ? source.parked.slice() : []
+    };
+  }
+
+  // Whether a row's box is ticked. While the permitted list is off every entry on it
+  // is parked, and the file's `ids` are empty -- so the tick there means "on the list,
+  // ready for when it is switched on", which is the parked set.
+  function onList(kind, row) {
+    if (kind === "permitted" && lastPlayers && !lastPlayers.whitelistEnabled) {
+      return !!row.file_id && lastPlayers.lists.permitted.parked.indexOf(row.file_id) !== -1;
+    }
+    return !!row["is_" + kind];
+  }
+
+  function showPlayersError(text) {
+    if (!el.playersError) { return; }
+    el.playersError.textContent = text || "";
+    el.playersError.hidden = !text;
+    markTab("players", text ? "error" : "", "error");
+  }
+
+  function renderPlayers(payload) {
+    if (!el.playersBody || !payload) { return; }
+    playersLoaded = true;
+    var lists = payload.lists || {};
+    lastPlayers = {
+      players: Array.isArray(payload.players) ? payload.players : [],
+      lists: {
+        admin: normaliseList(lists.admin),
+        banned: normaliseList(lists.banned),
+        permitted: normaliseList(lists.permitted)
+      },
+      whitelistEnabled: payload.whitelist_enabled === true,
+      conflicts: Array.isArray(payload.list_env_conflicts) ? payload.list_env_conflicts : []
+    };
+
+    el.playersBody.textContent = "";
+    for (var i = 0; i < lastPlayers.players.length; i++) {
+      el.playersBody.appendChild(playerRow(lastPlayers.players[i], i));
+    }
+    el.playersTable.hidden = !lastPlayers.players.length;
+    el.playersEmpty.hidden = !!lastPlayers.players.length;
+
+    el.whitelistToggle.checked = lastPlayers.whitelistEnabled;
+    el.whitelistNote.textContent = lastPlayers.whitelistEnabled
+      ? "On: only players ticked under Permitted can join. Everyone else is turned away."
+      : "Off: anyone with the join password can join. Ticks under Permitted are kept " +
+        "ready for when you switch it on.";
+
+    renderEnvConflicts(lastPlayers.conflicts);
+    for (var k = 0; k < PLAYER_LISTS.length; k++) { seedRawEditor(PLAYER_LISTS[k]); }
+    syncPlayerControls();
+  }
+
+  function renderEnvConflicts(names) {
+    if (!el.playersEnvConflict) { return; }
+    if (!names.length) {
+      el.playersEnvConflict.hidden = true;
+      el.playersEnvConflict.textContent = "";
+      return;
+    }
+    var one = names.length === 1;
+    el.playersEnvConflict.textContent =
+      names.join(" and ") + (one ? " is" : " are") + " set in valheim.env. The game " +
+      "server rewrites the matching list from " + (one ? "it" : "them") + " every time " +
+      "it starts, so anything you change here will be thrown away at the next start. " +
+      "Delete " + (one ? "that line" : "those lines") + " from valheim.env (or leave " +
+      (one ? "it" : "them") + " empty) to manage the lists from this page.";
+    el.playersEnvConflict.hidden = false;
+  }
+
+  function seedRawEditor(kind) {
+    var box = rawEditor(kind);
+    if (!box) { return; }
+    var text = rawText(lastPlayers.lists[kind]);
+    var stale = document.getElementById("raw-" + kind + "-stale");
+    if (!rawDirty[kind]) {
+      box.value = text;
+      rawSeeds[kind] = text;
+      if (stale) { stale.hidden = true; }
+      return;
+    }
+    // Being typed in: leave it, but say so if the file moved underneath.
+    if (stale) { stale.hidden = text === rawSeeds[kind]; }
+  }
+
+  function playerRow(row, index) {
+    var tr = document.createElement("tr");
+    var who = document.createElement("td");
+    who.className = "player-name";
+    // The name only when the log let the watcher attach one with certainty; the ID
+    // alone is the honest fallback, never a guess at whose name it is.
+    var title = document.createElement("div");
+    title.textContent = row.name || row.id;
+    who.appendChild(title);
+    if (row.name) {
+      var id = document.createElement("div");
+      id.className = "player-id muted";
+      id.textContent = row.id;
+      who.appendChild(id);
+    }
+    var noteId = "";
+    if (!row.file_id) {
+      // The log's ID could not be turned into the form the lists use without guessing,
+      // and a guessed line is one the game silently ignores while the page says it
+      // worked. So this row cannot be ticked, and says what to do instead.
+      noteId = "player-needs-id-" + index;
+      var note = document.createElement("div");
+      note.className = "player-note muted small";
+      note.id = noteId;
+      note.textContent = "Their ID could not be worked out from the server log, so " +
+        "they cannot be ticked here. Ask them for the ID the game shows when they " +
+        "press F2, and add it with Add a player by ID below.";
+      who.appendChild(note);
+    }
+    tr.appendChild(who);
+
+    tr.appendChild(textCell(formatSeen(row.first_seen), "player-seen"));
+    tr.appendChild(textCell(formatSeen(row.last_seen), "player-seen"));
+    tr.appendChild(textCell(row.last_world || "—", ""));
+
+    for (var k = 0; k < PLAYER_LISTS.length; k++) {
+      tr.appendChild(toggleCell(PLAYER_LISTS[k], row, noteId));
+    }
+    return tr;
+  }
+
+  function textCell(text, cls) {
+    var td = document.createElement("td");
+    if (cls) { td.className = cls; }
+    td.textContent = text;
+    return td;
+  }
+
+  function toggleCell(kind, row, noteId) {
+    var td = document.createElement("td");
+    td.className = "player-toggle";
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = onList(kind, row);
+    box.setAttribute("data-player-list", kind);
+    box.setAttribute("data-file-id", row.file_id || "");
+    box.setAttribute("aria-label", PLAYER_LIST_LABELS[kind] + ": " + (row.name || row.id));
+    if (!row.file_id) {
+      box.disabled = true;
+      box.setAttribute("data-needs-id", "true");
+      box.setAttribute("aria-describedby", noteId);
+    }
+    if (kind === "permitted" && lastPlayers && !lastPlayers.whitelistEnabled && box.checked) {
+      td.className += " is-parked";
+      box.title = "On the permitted list, which is switched off right now.";
+    }
+    td.appendChild(box);
+    return td;
+  }
+
+  function syncPlayerControls() {
+    if (!el.playersBody) { return; }
+    var busy = playersBusy;
+    var boxes = el.playersBody.querySelectorAll("input[data-player-list]");
+    for (var i = 0; i < boxes.length; i++) {
+      // A row without a usable ID stays disabled whatever else is going on.
+      boxes[i].disabled = busy || boxes[i].getAttribute("data-needs-id") === "true";
+    }
+    el.whitelistToggle.disabled = busy;
+    el.playersRefresh.disabled = busy;
+    el.playerAddKind.disabled = busy;
+    el.playerAddId.disabled = busy;
+    el.playerAddButton.disabled = busy;
+    var buttons = document.querySelectorAll("[data-raw-save], [data-raw-reset]");
+    for (var b = 0; b < buttons.length; b++) { buttons[b].disabled = busy; }
+  }
+
+  function refusal(payload) {
+    var err = new Error((payload && payload.error) || "The manager refused that without saying why.");
+    err.fromManager = true;
+    return err;
+  }
+
+  function errorText(err) {
+    return err && err.fromManager
+      ? err.message
+      : "Lost contact with the manager: " + ((err && err.message) || err);
+  }
+
+  // One request to the players routes, as a promise of the payload. A refusal is
+  // thrown carrying the manager's own words, which already say what to do.
+  function playersRequest(url, body) {
+    var init = { credentials: "same-origin" };
+    if (body !== undefined) {
+      init.method = "POST";
+      init.headers = { "Content-Type": "application/json" };
+      init.body = JSON.stringify(body);
+    }
+    return fetch(url, init).then(function (response) {
+      if (response.status === 401) { window.location.href = "/login"; return null; }
+      return response.json().catch(function () { return {}; }).then(function (payload) {
+        if (!response.ok) { throw refusal(payload); }
+        return payload;
+      });
+    });
+  }
+
+  function refreshPlayers() {
+    if (!el.playersBody) { return Promise.resolve(null); }
+    return playersRequest("/api/players").then(function (payload) {
+      if (payload) { renderPlayers(payload); }
+      return payload;
+    }).catch(function (err) {
+      showPlayersError(errorText(err));
+      return null;
+    });
+  }
+
+  // lastPlayers back in the shape the manager sends, for repainting without a request.
+  function lastPlayersPayload() {
+    return {
+      players: lastPlayers.players,
+      lists: lastPlayers.lists,
+      whitelist_enabled: lastPlayers.whitelistEnabled,
+      list_env_conflicts: lastPlayers.conflicts
+    };
+  }
+
+  // Put the controls back to the last state the files were known to be in.
+  function repaintLastKnown() {
+    if (lastPlayers) { renderPlayers(lastPlayersPayload()); } else { syncPlayerControls(); }
+  }
+
+  // Every change goes through here. Success repaints from the answer, which is the
+  // files as they now stand. Failure shows the manager's words as they are, puts the
+  // controls back to the last known state, and then reads the files again -- so a
+  // refused tick never stays ticked.
+  function sendPlayers(url, body, onSaved) {
+    playersBusy = true;
+    syncPlayerControls();
+    return playersRequest(url, body).then(function (payload) {
+      playersBusy = false;
+      if (!payload) { syncPlayerControls(); return null; }
+      if (onSaved) { onSaved(payload); }
+      renderPlayers(payload);
+      return payload;
+    }).catch(function (err) {
+      playersBusy = false;
+      showPlayersError(errorText(err));
+      repaintLastKnown();
+      return refreshPlayers().then(function () { return null; });
+    });
+  }
+
+  // Ticking Permitted while the list is switched off. Through the ordinary route that
+  // would write an active line -- and one active line switches the whole whitelist ON,
+  // with only that player allowed in and nobody asked. So the tick adds or removes the
+  // player among the PARKED entries instead, ready for when the list is turned on.
+  // Built from a fresh read, not from the table as painted, so an edit made elsewhere
+  // in the meantime is not written over.
+  function setParked(fileId, member) {
+    if (/\s/.test(fileId)) {
+      showPlayersError("That ID has a space in it, so it cannot be set aside from the " +
+        "table. Change it in the permitted list as text, below.");
+      repaintLastKnown();
+      return;
+    }
+    playersBusy = true;
+    syncPlayerControls();
+    playersRequest("/api/players").then(function (payload) {
+      playersBusy = false;
+      if (!payload) { syncPlayerControls(); return; }
+      var list = normaliseList(payload.lists && payload.lists.permitted);
+      if (list.ids.length) {
+        // Switched on in the meantime: the ordinary route is the right one now.
+        sendPlayers("/api/players/list", { kind: "permitted", file_id: fileId, member: member });
+        return;
+      }
+      var parked = list.parked.filter(function (id) { return id !== fileId; });
+      if (member) { parked.push(fileId); }
+      sendPlayers("/api/players/raw", {
+        kind: "permitted", text: rawText({ ids: [], parked: parked })
+      });
+    }).catch(function (err) {
+      playersBusy = false;
+      showPlayersError(errorText(err));
+      repaintLastKnown();
+    });
+  }
+
+  function onPlayerToggle(event) {
+    var box = event.target;
+    if (!box || !box.getAttribute || !box.getAttribute("data-player-list")) { return; }
+    var kind = box.getAttribute("data-player-list");
+    var fileId = box.getAttribute("data-file-id");
+    showPlayersError("");
+    // Never send a missing or guessed ID. The box is disabled for such a row; this is
+    // the belt to that brace.
+    if (!fileId || box.getAttribute("data-needs-id") === "true" || !lastPlayers) {
+      repaintLastKnown();
+      return;
+    }
+    var member = box.checked === true;
+    if (kind === "permitted" && !lastPlayers.whitelistEnabled) {
+      setParked(fileId, member);
+      return;
+    }
+    sendPlayers("/api/players/list", { kind: kind, file_id: fileId, member: member });
+  }
+
+  // Who the permitted list would let in, by name where one is known.
+  function describeIds(ids) {
+    var names = {};
+    var players = lastPlayers ? lastPlayers.players : [];
+    for (var i = 0; i < players.length; i++) {
+      if (players[i].file_id && players[i].name) { names[players[i].file_id] = players[i].name; }
+    }
+    return ids.map(function (id) { return { id: id, name: names[id] || "" }; });
+  }
+
+  function permittedEntries() {
+    if (!lastPlayers) { return []; }
+    var list = lastPlayers.lists.permitted;
+    var seen = {};
+    var ids = [];
+    list.parked.concat(list.ids).forEach(function (id) {
+      if (!seen[id]) { seen[id] = 1; ids.push(id); }
+    });
+    return describeIds(ids);
+  }
+
+  function whitelistQuestion(entries) {
+    var who = entries.length
+      ? entries.map(function (e) { return e.name ? e.name + " (" + e.id + ")" : e.id; }).join(", ")
+      : "nobody yet";
+    return "Turn the permitted list on?\n\n" +
+      "Only the players on it will be able to join. Everyone else is turned away when " +
+      "they try, even with the right join password.\n\n" +
+      "On the list: " + who + ".\n\n" +
+      "The manager cannot tell which of these players is you, so it cannot keep you " +
+      "on the list for you. Check you are on it before you go on.";
+  }
+
+  // Asks before anything that would switch the permitted list on. The <dialog> where
+  // there is one; otherwise still ask, and never act straight off the click.
+  function askWhitelist(entries, onConfirm) {
+    if (!el.whitelistDialog) { return; }
+    pendingWhitelist = onConfirm;
+    el.whitelistCount.textContent = entries.length
+      ? (entries.length === 1 ? "One player is on it:" : entries.length + " players are on it:")
+      : "Nobody is on it yet.";
+    el.whitelistList.textContent = "";
+    for (var i = 0; i < entries.length; i++) {
+      var item = document.createElement("li");
+      item.textContent = entries[i].name ? entries[i].name + " " : "";
+      var id = document.createElement("span");
+      id.className = "player-id";
+      id.textContent = entries[i].id;
+      item.appendChild(id);
+      el.whitelistList.appendChild(item);
+    }
+    el.whitelistList.hidden = !entries.length;
+    if (typeof el.whitelistDialog.showModal === "function") {
+      el.whitelistDialog.showModal();
+    } else if (window.confirm(whitelistQuestion(entries))) {
+      confirmWhitelist();
+    } else {
+      // Declined. Clearing this matters: a question left pending is one a later
+      // confirm would answer without the operator ever having seen it.
+      pendingWhitelist = null;
+    }
+  }
+
+  function closeWhitelist() {
+    pendingWhitelist = null;
+    if (el.whitelistDialog && el.whitelistDialog.close && el.whitelistDialog.open) {
+      el.whitelistDialog.close();
+    }
+  }
+
+  function confirmWhitelist() {
+    var run = pendingWhitelist;
+    closeWhitelist();
+    if (run) { run(); }
+  }
+
+  function saveRaw(kind) {
+    var box = rawEditor(kind);
+    if (!box) { return; }
+    showPlayersError("");
+    var text = box.value;
+    var send = function () {
+      sendPlayers("/api/players/raw", { kind: kind, text: text }, function () {
+        // Saved: the box follows the file again, starting with this answer.
+        rawDirty[kind] = false;
+      });
+    };
+    // Active lines in a permitted list that is off would switch it on. That is the
+    // same act as the switch above, so it gets the same question.
+    var active = activeLines(text);
+    if (kind === "permitted" && lastPlayers && !lastPlayers.whitelistEnabled && active.length) {
+      askWhitelist(describeIds(active), send);
+      return;
+    }
+    send();
+  }
+
+  function resetRaw(kind) {
+    rawDirty[kind] = false;
+    if (lastPlayers) { seedRawEditor(kind); }
+  }
+
+  function addPlayer() {
+    showPlayersError("");
+    var kind = el.playerAddKind.value;
+    if (kind === "permitted" && lastPlayers && !lastPlayers.whitelistEnabled) {
+      // Adding by ID writes an active line, which would switch the list on with only
+      // this player allowed in. Ticking a row parks them instead (see setParked).
+      showPlayersError("The permitted list is switched off, so a player cannot be " +
+        "added to it by ID right now: that would switch it straight on with only them " +
+        "allowed in. Tick Permitted on their row instead (anyone who has joined is in " +
+        "the table), or switch the list on first and then add them.");
+      return;
+    }
+    sendPlayers("/api/players/add", { kind: kind, id: el.playerAddId.value }, function () {
+      el.playerAddId.value = "";
+    });
+  }
+
+  function initPlayers() {
+    if (!el.playersBody) { return; }
+    el.playersRefresh.addEventListener("click", function () {
+      showPlayersError("");
+      refreshPlayers();
+    });
+    el.playersBody.addEventListener("change", onPlayerToggle);
+
+    el.whitelistToggle.addEventListener("change", function () {
+      showPlayersError("");
+      if (!el.whitelistToggle.checked) {
+        // Off lets people in rather than keeping them out, so it needs no question.
+        sendPlayers("/api/players/whitelist", { enabled: false });
+        return;
+      }
+      // Not on until the operator says so: the box shows what the file says while the
+      // question is open, and a Cancel leaves it exactly there.
+      el.whitelistToggle.checked = false;
+      askWhitelist(permittedEntries(), function () {
+        sendPlayers("/api/players/whitelist", { enabled: true });
+      });
+    });
+    el.whitelistConfirm.addEventListener("click", confirmWhitelist);
+    el.whitelistCancel.addEventListener("click", closeWhitelist);
+    // Esc closes a <dialog> on its own; make that forget the question too.
+    el.whitelistDialog.addEventListener("close", function () { pendingWhitelist = null; });
+
+    el.playerAddForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!el.playerAddButton.disabled) { addPlayer(); }
+    });
+
+    PLAYER_LISTS.forEach(function (kind) {
+      var box = rawEditor(kind);
+      if (box) { box.addEventListener("input", function () { rawDirty[kind] = true; }); }
+    });
+    el.playersTable.parentNode.addEventListener("click", function (event) {
+      var target = event.target && event.target.closest ? event.target : null;
+      if (!target) { return; }
+      var save = target.closest("[data-raw-save]");
+      if (save && !save.disabled) { saveRaw(save.getAttribute("data-raw-save")); return; }
+      var reset = target.closest("[data-raw-reset]");
+      if (reset && !reset.disabled) { resetRaw(reset.getAttribute("data-raw-reset")); }
+    });
+
+    refreshPlayers();
+  }
+
   // -------------------------------------------------------------- websocket
 
   function wsUrl() {
@@ -2090,6 +2651,7 @@
   initHints();
   initMods();
   initBackups();
+  initPlayers();
   startClock();
 
   el.start.addEventListener("click", function () { system("start requested"); post("/api/start"); });

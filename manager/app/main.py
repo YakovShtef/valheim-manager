@@ -40,6 +40,7 @@ import hashlib
 import logging
 import os
 import time
+import unicodedata
 import uuid
 from datetime import datetime
 from contextlib import suppress
@@ -60,6 +61,19 @@ from starlette.websockets import WebSocketDisconnect
 
 from .auth import LOGIN_ERROR, AuthConfigError, SessionAuth
 from .docker_control import DockerControl, DockerControlError
+from .permission_lists import (
+    ADMIN,
+    BANNED,
+    PERMITTED,
+    PermissionListError,
+    PermissionLists,
+    normalise_typed_id,
+    overwriting_env_vars,
+    parse_list_text,
+    to_file_id,
+)
+from .player_log import SessionTracker
+from .players import WATCH_INTERVAL_SECONDS, PlayerStore, harvest_players
 from .modifiers import (
     CATEGORIES as MODIFIER_CATEGORIES,
     FIELD_KEYS as MODIFIER_FIELD_KEYS,
@@ -280,6 +294,14 @@ class AppConfig:
     # holds the admin hash and the session secret, and a backup interval has no
     # business sharing a document whose only job is credentials.
     backup_schedule_file: str = "/srv/state/backup-schedule.json"
+    # Beside the other two on the same manager-owned volume, for the same reason: the
+    # roster is not a secret and has no business sharing a document with ones that are.
+    players_file: str = "/srv/state/players.json"
+    # The GAME's config volume, mounted into the manager too, so the roster endpoint
+    # can read the same adminlist.txt/bannedlist.txt/permittedlist.txt the game
+    # server reads. Not the manager-owned state above: these three files are the
+    # game's, and the manager is only a second writer on them.
+    valheim_config_dir: str = "/config"
     # Only used to print a clickable setup URL; the manager never calls itself.
     manager_url: str = ""
     restart_policy: str = "unless-stopped"
@@ -335,6 +357,8 @@ def config_from_env() -> AppConfig:
         backup_schedule_file=os.environ.get(
             "BACKUP_SCHEDULE_FILE", AppConfig.backup_schedule_file
         ),
+        players_file=os.environ.get("PLAYERS_FILE", AppConfig.players_file),
+        valheim_config_dir=os.environ.get("VALHEIM_CONFIG_DIR", AppConfig.valheim_config_dir),
         manager_url=os.environ.get("MANAGER_URL", "").strip(),
         restart_policy=os.environ.get("VALHEIM_RESTART_POLICY", "unless-stopped"),
         stop_timeout=_env_int("VALHEIM_STOP_TIMEOUT", 120, minimum=1),
@@ -358,6 +382,45 @@ async def _json_body(request: Request) -> dict[str, Any]:
     except Exception:
         return {}
     return body if isinstance(body, dict) else {}
+
+
+def _unsafe_file_id_reason(file_id: str) -> str | None:
+    """Why ``file_id`` cannot be written as a line in a list file, or ``None``.
+
+    This is a LINE-SAFETY check, not an ID-*shape* check -- it must accept ids
+    that ``normalise_typed_id`` would refuse, such as a bare 17-digit SteamID
+    someone hand-typed into a file before this feature existed. The roster
+    shows a row for exactly that kind of malformed file entry, and an operator
+    must still be able to remove it through ``/api/players/list``; shape-
+    validating here would make those rows impossible to take off a list, which
+    is exactly when removing one matters most.
+
+    What this refuses instead is anything that cannot round-trip as a single
+    line in the file: whitespace or control characters anywhere in the (already
+    end-stripped) value -- a real newline turns ``render_list_text``'s
+    ``"\\n".join`` into two lines, and the second can parse back as a
+    ``// disabled-by-manager`` comment, silently parking or unparking an
+    unrelated id -- and a leading ``//``, which the file's parser reads as a
+    comment rather than an id.
+
+    A hand-typed id that itself contains internal whitespace is therefore still
+    not removable through this route; use the raw editor for that list instead,
+    which writes exactly the text given rather than composing a line.
+    """
+    if any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in file_id):
+        return (
+            "That ID contains a newline, tab, or other whitespace/control "
+            "character, which cannot be written as a single line in the list "
+            "file. If this entry needs to be fixed or removed, use the raw "
+            "editor for that list instead."
+        )
+    if file_id.startswith("//"):
+        return (
+            "That ID starts with '//', which the list file would read as a "
+            "comment rather than a player. Use the raw editor for that list "
+            "instead."
+        )
+    return None
 
 
 class ApiError(Exception):
@@ -495,6 +558,18 @@ def create_app(
         except SettingsFileError:
             return ""
 
+    def _list_env_conflicts() -> list[str]:
+        """Overriding env vars set in valheim.env, or [] when it cannot be read.
+
+        The settings panel already surfaces an unreadable settings file to the
+        operator; neither the roster nor startup should turn that into a second,
+        louder failure.
+        """
+        try:
+            return overwriting_env_vars(store.read())
+        except SettingsFileError:
+            return []
+
     def _mods_for_the_next_start() -> None:
         """Put the loaded world's mods in front of BepInEx. Runs just before create.
 
@@ -545,6 +620,14 @@ def create_app(
         _log_setup_banner(config, setup)
     else:
         log.info("Admin credentials loaded from the %s; /setup is closed.", credential_source)
+    conflicts = _list_env_conflicts()
+    if conflicts:
+        log.warning(
+            "%s set in valheim.env. The game image rewrites the matching list file "
+            "from it every time the container starts, which will discard changes made "
+            "in the Players tab. Unset it there to manage these lists from the WebUI.",
+            ", ".join(conflicts),
+        )
     control = controller or DockerControl(
         base_url=config.docker_host,
         container_name=config.container_name,
@@ -1666,6 +1749,225 @@ def create_app(
         )
         return JSONResponse(_backups_panel(message=line))
 
+    def _roster_payload() -> dict[str, Any]:
+        """The roster, merged with the three files.
+
+        Membership is computed here, on every request, from the files themselves.
+        Nothing about who is an admin is cached in the roster store: one copy of the
+        fact is what stops this table and the raw editors disagreeing.
+        """
+        store = PlayerStore(config.players_file)
+        lists = PermissionLists(config.valheim_config_dir)
+        try:
+            files = {kind: lists.read(kind) for kind in (ADMIN, BANNED, PERMITTED)}
+        except PermissionListError as exc:
+            # A list file the manager cannot read is a fault on this side, not a
+            # malformed request -- the same status a settings-read failure answers
+            # with elsewhere in this file (see e.g. `_switch_world`). Raised here,
+            # at the payload level, rather than in each route: Tasks 8-10 return this
+            # same payload from POST routes too, and they get the same handling for
+            # free.
+            raise ApiError(500, str(exc)) from exc
+        members = {kind: set(entry.ids) for kind, entry in files.items()}
+
+        rows: dict[str, dict[str, Any]] = {}
+        for player in store.load().values():
+            file_id = to_file_id(player.platform_id, player.platform)
+            key = file_id or player.platform_id
+            rows[key] = {
+                # `id` is the merge key and what the UI shows: the file form when we
+                # have one, the raw logged id when we do not. `platform_id` stays the
+                # raw value so a mis-converted row is still correctable.
+                "id": key,
+                "platform_id": player.platform_id,
+                "file_id": file_id,
+                "name": player.name,
+                "first_seen": player.first_seen,
+                "last_seen": player.last_seen,
+                "last_world": player.last_world,
+                "seen": True,
+            }
+        # Anyone in a file who has never joined still needs a row, or they cannot be
+        # removed from the panel that claims to manage these files.
+        for ids in members.values():
+            for file_id in ids:
+                rows.setdefault(
+                    file_id,
+                    {
+                        "id": file_id,
+                        "platform_id": None,
+                        "file_id": file_id,
+                        "name": None,
+                        "first_seen": None,
+                        "last_seen": None,
+                        "last_world": None,
+                        "seen": False,
+                    },
+                )
+        for file_id, row in rows.items():
+            row["is_admin"] = file_id in members[ADMIN]
+            row["is_banned"] = file_id in members[BANNED]
+            row["is_permitted"] = file_id in members[PERMITTED]
+
+        return {
+            "players": sorted(
+                rows.values(),
+                key=lambda row: (row["last_seen"] is None, -(row["last_seen"] or 0.0)),
+            ),
+            "lists": {
+                kind: {
+                    "ids": list(entry.ids),
+                    "comments": list(entry.comments),
+                    "parked": list(entry.parked),
+                }
+                for kind, entry in files.items()
+            },
+            "whitelist_enabled": bool(files[PERMITTED].ids),
+            "list_env_conflicts": _list_env_conflicts(),
+        }
+
+    @app.get("/api/players")
+    async def api_players(request: Request) -> dict[str, Any]:
+        require_session(request)
+        return await run_in_threadpool(_roster_payload)
+
+    def _players_list_membership(body: dict[str, Any]) -> dict[str, Any]:
+        """Put a player on, or take them off, one of the three lists. Blocking
+        (file I/O), so: threadpool.
+
+        A ``PermissionListError`` here comes from ``read``/``write`` themselves --
+        the file could not be read or the replacement could not be written -- which
+        is a fault on this side, not something the caller typed wrong. That is the
+        same split ``_roster_payload`` already makes for reads, and what a settings
+        or world read-failure answers with elsewhere in this file (e.g.
+        ``_switch_world``): 500, not 400.
+        """
+        kind = str(body.get("kind", ""))
+        if kind not in (ADMIN, BANNED, PERMITTED):
+            raise ApiError(400, f"There is no {kind!r} list.")
+        file_id = str(body.get("file_id", "")).strip()
+        if not file_id:
+            raise ApiError(400, "No player was named.")
+        unsafe = _unsafe_file_id_reason(file_id)
+        if unsafe is not None:
+            raise ApiError(400, unsafe)
+        member = body.get("member")
+        if not isinstance(member, bool):
+            raise ApiError(400, "\"member\" must be true or false.")
+        lists = PermissionLists(config.valheim_config_dir)
+        try:
+            if member:
+                lists.add(kind, file_id)
+            else:
+                lists.remove(kind, file_id)
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/list")
+    async def api_players_list(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_list_membership, await _json_body(request))
+
+    def _players_add(body: dict[str, Any]) -> dict[str, Any]:
+        """Add a player by a typed id, in the file form the operator entered by hand.
+
+        Blocking (file I/O), so: threadpool. See ``_players_list_membership`` for why
+        a ``PermissionListError`` here is a 500: the id has already been validated by
+        ``normalise_typed_id`` by the time ``add`` can raise one.
+        """
+        kind = str(body.get("kind", ""))
+        if kind not in (ADMIN, BANNED, PERMITTED):
+            raise ApiError(400, f"There is no {kind!r} list.")
+        file_id, refusal = normalise_typed_id(str(body.get("id", "")))
+        if refusal is not None:
+            raise ApiError(400, refusal)
+        try:
+            PermissionLists(config.valheim_config_dir).add(kind, file_id)
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/add")
+    async def api_players_add(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_add, await _json_body(request))
+
+    def _players_raw(body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a whole list file from the raw editor. Blocking: threadpool.
+
+        The escape hatch the table cannot be: it writes whatever the operator typed,
+        because the whole point is to represent something the table cannot. It still
+        goes through the same parser and writer, so comments are preserved and the
+        mode is still 0664 -- the editor is a different UI, not a different writer.
+
+        One asymmetry worth understanding: ``write`` keeps the *existing* file's
+        comments rather than any in the submitted text, because the comment is the
+        game's header and not the operator's to retype. An operator who deletes the
+        header line in the editor gets it back, which is the intended behaviour.
+        """
+        kind = str(body.get("kind", ""))
+        if kind not in (ADMIN, BANNED, PERMITTED):
+            raise ApiError(400, f"There is no {kind!r} list.")
+        parsed = parse_list_text(kind, str(body.get("text", "")))
+        try:
+            PermissionLists(config.valheim_config_dir).write(
+                kind, parsed.ids, parked=parsed.parked
+            )
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/raw")
+    async def api_players_raw(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_raw, await _json_body(request))
+
+    def _players_whitelist(body: dict[str, Any]) -> dict[str, Any]:
+        """Turn the permitted list on or off without losing its contents.
+
+        Off parks every entry as a ``// disabled-by-manager`` comment: the game
+        ignores comments, so the list reads as empty and nobody is locked out,
+        while the entries survive to be switched back on. On restores them --
+        unless there is nothing to restore, since an empty permitted list that is
+        switched on stops everyone joining, including the operator, whom the
+        manager cannot identify and so cannot protect.
+
+        See ``_players_list_membership`` for why a ``PermissionListError`` here
+        (from ``read``/``write`` themselves) is a 500, not a 400.
+        """
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ApiError(400, "\"enabled\" must be true or false.")
+        lists = PermissionLists(config.valheim_config_dir)
+        try:
+            current = lists.read(PERMITTED)
+            if enabled:
+                restored = tuple(dict.fromkeys((*current.parked, *current.ids)))
+                if not restored:
+                    raise ApiError(
+                        400,
+                        "Add at least one player before turning the permitted "
+                        "list on. An empty permitted list that is switched on "
+                        "stops everyone joining, including the operator.",
+                    )
+                lists.write(PERMITTED, restored, parked=())
+            else:
+                parked = tuple(dict.fromkeys((*current.parked, *current.ids)))
+                lists.write(PERMITTED, (), parked=parked)
+        except PermissionListError as exc:
+            raise ApiError(500, str(exc)) from exc
+        return _roster_payload()
+
+    @app.post("/api/players/whitelist")
+    async def api_players_whitelist(request: Request) -> dict[str, Any]:
+        require_session(request)
+        require_same_origin(request)
+        return await run_in_threadpool(_players_whitelist, await _json_body(request))
+
     @app.get("/api/backups")
     async def api_backups(request: Request) -> JSONResponse:
         require_session(request)
@@ -2091,8 +2393,32 @@ def create_app(
                 log.exception("The backup timer hit an unexpected error; continuing.")
                 await asyncio.sleep(TICK_SECONDS)
 
+    async def _player_watcher() -> None:
+        """Backfill the whole current container log, then poll.
+
+        Backfill first because the roster must survive the manager being down; it is
+        safe to run unconditionally because the upsert is idempotent on platform id.
+        The gap it cannot close is a join that happened while the manager was down AND
+        before a `docker rm` -- removing a container destroys its log, and no design
+        recovers that.
+        """
+        player_store = PlayerStore(config.players_file)
+        tracker = SessionTracker()
+        since = 0.0
+        while True:
+            world = _loaded_world() or None
+            since = await asyncio.to_thread(
+                harvest_players, control, tracker, player_store, since=since, world=world
+            )
+            await asyncio.sleep(WATCH_INTERVAL_SECONDS)
+
+    # Both background tasks share one startup/shutdown pair rather than each getting
+    # its own: `@app.on_event(...)` warns at decoration time (not when the event
+    # actually fires), so every extra pair multiplies that warning across every test
+    # in the suite that calls `create_app`. Folding the player watcher in here keeps
+    # that count where it was instead of doubling it for two lines of wiring.
     @app.on_event("startup")
-    async def _start_backup_timer() -> None:
+    async def _start_background_tasks() -> None:
         # The timer only runs where its state directory already exists, and that
         # condition is doing real work rather than being defensive. In the container
         # /srv/state is a mounted volume and is always there. Everywhere else -- a
@@ -2108,20 +2434,49 @@ def create_app(
                 state_dir,
             )
             app.state.backup_timer = None
-            return
-        app.state.backup_timer = asyncio.create_task(_backup_timer())
+        else:
+            app.state.backup_timer = asyncio.create_task(_backup_timer())
+
+        # Same guard as the backup timer: only run where the state directory already
+        # exists. In the container /srv/state is a mounted volume; in a checkout
+        # running the suite it is not, and a background task that starts writing files
+        # merely because create_app was imported is not something an app should do.
+        players_dir = Path(config.players_file).parent
+        if not players_dir.is_dir():
+            log.info(
+                "Player roster not started: %s does not exist, so there is nowhere to "
+                "record who has joined.",
+                players_dir,
+            )
+            app.state.player_watcher = None
+        else:
+            app.state.player_watcher = asyncio.create_task(_player_watcher())
 
     @app.on_event("shutdown")
-    async def _stop_backup_timer() -> None:
-        task = getattr(app.state, "backup_timer", None)
-        if task is None:
-            return
-        task.cancel()
-        # Awaited rather than left to be garbage collected, so a backup already in
-        # flight is given the chance to finish its rename instead of being abandoned
-        # halfway -- and so the shutdown log line means what it says.
-        with suppress(asyncio.CancelledError):
-            await task
+    async def _stop_background_tasks() -> None:
+        backup_task = getattr(app.state, "backup_timer", None)
+        watcher_task = getattr(app.state, "player_watcher", None)
+        # Cancelled together before either is awaited, and the watcher's await lives
+        # in a `finally`: these two tasks are independent, so the backup task hitting
+        # something other than CancelledError on its way out must not be able to skip
+        # cancelling or awaiting the watcher (or the reverse). One task's shutdown may
+        # not block the other's.
+        if backup_task is not None:
+            backup_task.cancel()
+        if watcher_task is not None:
+            watcher_task.cancel()
+        try:
+            if backup_task is not None:
+                # Awaited rather than left to be garbage collected, so a backup
+                # already in flight is given the chance to finish its rename instead
+                # of being abandoned halfway -- and so the shutdown log line means
+                # what it says.
+                with suppress(asyncio.CancelledError):
+                    await backup_task
+        finally:
+            if watcher_task is not None:
+                with suppress(asyncio.CancelledError):
+                    await watcher_task
 
     return app
 

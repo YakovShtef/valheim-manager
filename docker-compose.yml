@@ -253,6 +253,14 @@ services:
       # from the host (VALHEIM_SETTINGS_DIR); the state file lives on a named volume.
       VALHEIM_ENV_FILE: /srv/settings/valheim.env
       MANAGER_STATE_FILE: /srv/state/manager-state.json
+      # Beside it on the same manager-owned volume: everyone who has ever joined,
+      # rebuilt from the game container's own log so it survives the manager
+      # restarting (see the Roster panel).
+      PLAYERS_FILE: /srv/state/players.json
+      # The GAME's config volume (mounted below), so the roster endpoint can read
+      # adminlist.txt/bannedlist.txt/permittedlist.txt straight from the files the
+      # game server itself reads -- membership is never cached anywhere else.
+      VALHEIM_CONFIG_DIR: /config
       # The worlds the Worlds panel lists, switches between and uploads into, on the
       # game's own config volume (mounted below). The game container sees the same
       # path; its mount is unchanged.
