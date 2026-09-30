@@ -1756,7 +1756,7 @@ def create_app(
         Nothing about who is an admin is cached in the roster store: one copy of the
         fact is what stops this table and the raw editors disagreeing.
         """
-        store = PlayerStore(config.players_file)
+        roster_store = PlayerStore(config.players_file)
         lists = PermissionLists(config.valheim_config_dir)
         try:
             files = {kind: lists.read(kind) for kind in (ADMIN, BANNED, PERMITTED)}
@@ -1769,9 +1769,13 @@ def create_app(
             # free.
             raise ApiError(500, str(exc)) from exc
         members = {kind: set(entry.ids) for kind, entry in files.items()}
+        # "On the permitted list" is active OR parked: while the whitelist is off every
+        # entry is parked, and those players are still on it -- ready, not in force.
+        # Whether it is in force is `whitelist_enabled` below, which counts active ids.
+        members[PERMITTED] |= set(files[PERMITTED].parked)
 
         rows: dict[str, dict[str, Any]] = {}
-        for player in store.load().values():
+        for player in roster_store.load().values():
             file_id = to_file_id(player.platform_id, player.platform)
             key = file_id or player.platform_id
             rows[key] = {
@@ -1856,10 +1860,12 @@ def create_app(
             raise ApiError(400, "\"member\" must be true or false.")
         lists = PermissionLists(config.valheim_config_dir)
         try:
+            # add_member, not add: a permitted add while the whitelist is off parks
+            # the player rather than writing the active line that would switch it on.
             if member:
-                lists.add(kind, file_id)
+                lists.add_member(kind, file_id)
             else:
-                lists.remove(kind, file_id)
+                lists.remove_member(kind, file_id)
         except PermissionListError as exc:
             raise ApiError(500, str(exc)) from exc
         return _roster_payload()
@@ -1884,7 +1890,9 @@ def create_app(
         if refusal is not None:
             raise ApiError(400, refusal)
         try:
-            PermissionLists(config.valheim_config_dir).add(kind, file_id)
+            # add_member for the same reason as the membership route: only the
+            # whitelist route may switch the permitted list on.
+            PermissionLists(config.valheim_config_dir).add_member(kind, file_id)
         except PermissionListError as exc:
             raise ApiError(500, str(exc)) from exc
         return _roster_payload()
