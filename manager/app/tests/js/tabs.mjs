@@ -953,24 +953,36 @@ const ONLINE = (over = {}) => PLAYERS({
 });
 const onlineRows = (p) => [...p.doc.querySelectorAll("#online-body tr")];
 
+const filterChip = (p, name) => p.doc.querySelector(`[data-filter="${name}"]`);
+const chipCount = (p, name) => filterChip(p, name).querySelector("[data-count]").textContent;
+
 check("online_players_are_listed_with_what_can_be_done", async () => {
+  // Online is a filter on the one grid, not a second table.
   const p = await playersPage(ONLINE());
   p.tab("players").click();
-  const listed = onlineRows(p);
-  eq(listed.length, 1, "the online list");
+  eq(chipCount(p, "online"), "1", "the Online chip's count");
+  filterChip(p, "online").click();
+  await p.settle();
+  eq(filterChip(p, "online").getAttribute("aria-pressed"), "true", "the Online chip is not pressed");
+  const listed = rows(p);
+  eq(listed.length, 1, "rows under Online");
   eq(listed[0].textContent.indexOf("Ragnar") !== -1, true, "the online row's name");
-  eq(p.doc.getElementById("online-count").textContent, "1", "the count");
-  eq(p.doc.getElementById("online-empty").hidden, true, "the empty note is showing");
-  eq(!!listed[0].querySelector("button[data-online-ban]"), true, "no Ban button");
-  eq(!!listed[0].querySelector("button[data-online-admin]"), true, "no Make admin button");
+  eq(/Online/.test(listed[0].children[1].textContent), true,
+     "the status cell does not say Online: " + listed[0].children[1].textContent);
+  eq(p.doc.getElementById("players-filter-empty").hidden, true, "the empty state is showing");
+  eq(!!box(p, 0, "banned") && !!box(p, 0, "admin"), true, "the online row has no role pills");
 });
 
 check("nobody_online_says_so", async () => {
   const p = await playersPage(PLAYERS());
   p.tab("players").click();
-  eq(onlineRows(p).length, 0, "rows in the online list");
-  eq(p.doc.getElementById("online-empty").hidden, false, "the empty note");
-  eq(p.doc.getElementById("online-count").textContent, "0", "the count");
+  filterChip(p, "online").click();
+  await p.settle();
+  eq(rows(p).length, 0, "rows under Online");
+  eq(p.doc.getElementById("players-filter-empty").hidden, false, "the empty state");
+  eq(p.doc.getElementById("players-filter-empty-text").textContent,
+     "No vikings currently active", "the empty state's words");
+  eq(chipCount(p, "online"), "0", "the Online chip's count");
 });
 
 check("banning_an_online_player_asks_first", async () => {
@@ -981,14 +993,15 @@ check("banning_an_online_player_asks_first", async () => {
   const asked = [];
   p.win.confirm = (text) => { asked.push(text); return false; };
   const before = p.posts.length;
-  onlineRows(p)[0].querySelector("button[data-online-ban]").click();
+  tick(p, box(p, 0, "banned"), true);
   await p.settle();
   eq(asked.length, 1, "Ban did not ask anything");
   eq(asked[0].indexOf("Ragnar") !== -1, true, "the question does not name the player: " + asked[0]);
   eq(p.posts.slice(before), [], "saying no still banned them");
+  eq(box(p, 0, "banned").checked, false, "the pill stayed on after saying no");
 
   p.win.confirm = () => true;
-  onlineRows(p)[0].querySelector("button[data-online-ban]").click();
+  tick(p, box(p, 0, "banned"), true);
   await p.settle();
   eq(p.posts.slice(before),
      [{ path: "/api/players/list", body: { kind: "banned", file_id: RAGNAR, member: true } }],
@@ -999,11 +1012,34 @@ check("making_an_online_player_admin_posts_the_list_change", async () => {
   const p = await playersPage(ONLINE());
   p.tab("players").click();
   const before = p.posts.length;
-  onlineRows(p)[0].querySelector("button[data-online-admin]").click();
+  tick(p, box(p, 0, "admin"), true);
   await p.settle();
   eq(p.posts.slice(before),
      [{ path: "/api/players/list", body: { kind: "admin", file_id: RAGNAR, member: true } }],
-     "Make admin did not send exactly one change");
+     "Admin did not send exactly one change");
+});
+
+check("the_filter_chips_count_and_filter_the_grid", async () => {
+  const p = await playersPage(PLAYERS());
+  p.tab("players").click();
+  eq(["all", "admin", "banned", "permitted"].map((name) => chipCount(p, name)),
+     ["4", "1", "1", "2"], "the chip counts");
+  filterChip(p, "banned").click();
+  await p.settle();
+  eq(rows(p).map((row) => row.querySelector(".player-title").textContent), ["V_1111"],
+     "the rows under Banned");
+  filterChip(p, "all").click();
+  await p.settle();
+  eq(rows(p).length, 4, "back to everyone");
+});
+
+check("every_row_offers_its_id_for_copying", async () => {
+  const p = await playersPage(PLAYERS());
+  p.tab("players").click();
+  const ids = rows(p).map((row) => row.querySelector("[data-copy-id]"));
+  eq(ids.every(Boolean), true, "a row has no copy button");
+  eq(ids.map((button) => button.getAttribute("data-copy-id")),
+     [RAGNAR, "xbox-2535411", "V_1111", "V_2222"], "what each copy button would copy");
 });
 
 check("the_ban_dialog_is_wired_for_browsers_that_have_it", async () => {

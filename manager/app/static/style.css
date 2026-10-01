@@ -13,39 +13,47 @@
 :root {
   color-scheme: dark;
 
-  /* Surfaces, darkest to lightest. Depth is carried by these four steps plus a
-     hairline, never by a heavy border. */
-  --bg: #0b0e12;
-  --surface: #14181f;
-  --surface-2: #1b2029;
-  --surface-3: #232935;
+  /* Iron and charcoal, darkest to lightest. Depth comes from these steps plus a
+     hairline, never from shadows or glass. */
+  --bg: #090d12;
+  --surface: #131822;
+  --surface-2: #19202c;
+  --surface-3: #212a38;
 
   /* One hairline for structure, one stronger line for hover and focus. */
-  --line: #252c37;
-  --line-strong: #39424f;
+  --line: #1e2634;
+  --line-strong: #2c3647;
 
   /* Three levels of text, and no more. */
-  --ink: #e9edf3;
-  --ink-dim: #9fa9b7;
-  --ink-faint: #6b7583;
+  --ink: #e6e9ef;
+  --ink-dim: #98a2b3;
+  --ink-faint: #5f6b7c;
 
-  /* One accent. Everything interactive-and-affirmative uses it. */
-  --accent: #79c9a6;
-  --accent-soft: rgba(121, 201, 166, .13);
-  --accent-line: rgba(121, 201, 166, .42);
-  --accent-ink: #0a1712;
+  /* Ember gold: the ONE accent. Primary actions, the active tab, focus. Nothing else. */
+  --accent: #f59e0b;
+  --accent-strong: #d97706;
+  --accent-soft: rgba(245, 158, 11, .12);
+  --accent-line: rgba(245, 158, 11, .42);
+  --accent-ink: #1b1204;
 
-  --danger: #e58270;
-  --danger-soft: rgba(229, 130, 112, .13);
-  --danger-line: rgba(229, 130, 112, .45);
+  /* Runic cyan: live telemetry only (connection, the clock's freshness). */
+  --info: #22d3ee;
+  --info-soft: rgba(6, 182, 212, .12);
+  --info-line: rgba(6, 182, 212, .40);
 
-  --warn: #e6b84a;
-  --warn-soft: rgba(230, 184, 74, .13);
-  --warn-line: rgba(230, 184, 74, .42);
+  /* Status: emerald for up, crimson for down or broken, gold for "held". */
+  --ok: #34d399;
+  --ok-soft: rgba(16, 185, 129, .12);
+  --ok-line: rgba(16, 185, 129, .42);
 
-  --ok: #74c58f;
-  --ok-soft: rgba(116, 197, 143, .15);
-  --ok-line: rgba(116, 197, 143, .45);
+  --danger: #f87171;
+  --danger-strong: #dc2626;
+  --danger-soft: rgba(220, 38, 38, .12);
+  --danger-line: rgba(220, 38, 38, .45);
+
+  --warn: #facc15;
+  --warn-soft: rgba(234, 179, 8, .12);
+  --warn-line: rgba(234, 179, 8, .40);
 
   /* Spacing scale. Everything is a step on this -- no stray 13px. */
   --s1: 4px;
@@ -57,18 +65,18 @@
   --s7: 32px;
   --s8: 44px;
 
-  /* Radii: controls, containers, pills. Three, not seven. */
-  --r-control: 8px;
-  --r-container: 12px;
+  /* Radii: tight, like a tool rather than a toy. */
+  --r-control: 6px;
+  --r-container: 8px;
   --r-pill: 999px;
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
-  --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, .7);
+  --shadow-1: none;
+  --shadow-2: 0 12px 32px -12px rgba(0, 0, 0, .8);
 
-  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  --ease: 130ms cubic-bezier(.4, 0, .2, 1);
+  --ease: 150ms cubic-bezier(.4, 0, .2, 1);
 }
 
 * { box-sizing: border-box; }
@@ -77,15 +85,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 15px/1.6 var(--font);
+  font: 14px/1.55 var(--font);
   -webkit-font-smoothing: antialiased;
-  /* A single soft light source behind the header, so the page has a top without
-     needing a coloured banner across it. */
-  background-image: radial-gradient(
-    900px 380px at 50% -160px, rgba(121, 201, 166, .07), transparent 70%
-  );
-  background-repeat: no-repeat;
-  background-attachment: fixed;
+  font-feature-settings: "cv11", "ss01";
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -112,9 +114,14 @@ body {
    shouting; the old uppercase-and-grey treatment made every card look like a
    form legend. The flex row is so a card can put a control on the same line. */
 h2 {
-  font-size: 14px; font-weight: 620; letter-spacing: -.006em;
+  font-size: 14px; font-weight: 600; letter-spacing: -.006em;
   color: var(--ink); margin: 0 0 var(--s4);
   display: flex; align-items: center; gap: var(--s3);
+}
+/* A section label: small, tracked, uppercase. Names a region without shouting. */
+.section-tag {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-dim); margin: 0;
 }
 
 /* ------------------------------------------------------------------- cards */
@@ -123,9 +130,8 @@ h2 {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-container);
-  padding: var(--s5);
+  padding: var(--s4);
   margin-top: var(--s4);
-  box-shadow: var(--shadow-1);
 }
 .card > p:last-child, .card > form:last-child { margin-bottom: 0; }
 
@@ -713,3 +719,186 @@ dialog.confirm .controls { margin-top: var(--s5); justify-content: flex-end; }
 .online-card h2 .tag { font-family: var(--mono); }
 .online-card .online-actions { text-align: right; white-space: nowrap; }
 .online-card .online-actions > * + * { margin-left: 8px; }
+
+
+/* =====================================================================
+   Redesign components: panel, segmented filter, switch, role pills, grid,
+   notices, empty state, raw-lists modal. Built on the tokens above.
+   ===================================================================== */
+
+.mono, .grid .mono { font-family: var(--mono); }
+
+/* A panel is a card whose header is a toolbar, separated by a hairline. */
+.panel {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-container); margin-top: var(--s4); overflow: visible;
+}
+.panel-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s4);
+  padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line);
+}
+.panel-head .section-tag { display: flex; align-items: center; gap: var(--s2); }
+.panel-tools { display: flex; align-items: center; gap: var(--s2); margin-left: auto; }
+.panel-tools button.small { margin-left: 0; }
+
+/* The "?" that opens a hint bubble. */
+.info-dot {
+  width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  display: inline-grid; place-items: center;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  color: var(--ink-faint); background: transparent; border: 1px solid var(--line-strong);
+}
+.info-dot:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-faint); background: transparent; }
+.hint-bubble-end { left: auto; right: 0; }
+
+/* Segmented filter: one row of chips, the pressed one carries the accent. */
+.seg { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
+.seg-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; font-size: 12.5px; font-weight: 500;
+  border-radius: var(--r-control); border: 1px solid transparent;
+  background: transparent; color: var(--ink-dim);
+}
+.seg-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); border-color: transparent; }
+.seg-btn[aria-pressed="true"] {
+  background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line);
+}
+.seg-count {
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+  padding: 0 6px; border-radius: var(--r-pill);
+  background: var(--surface-3); color: var(--ink-dim);
+}
+.seg-btn[aria-pressed="true"] .seg-count { background: rgba(245, 158, 11, .18); color: var(--accent); }
+
+/* Status dots. Online pulses once a few seconds -- alive, not alarming. */
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; background: var(--ink-faint); }
+.dot-online { background: var(--ok); box-shadow: 0 0 0 0 rgba(52, 211, 153, .5); animation: ping 2.4s ease-out infinite; }
+.dot-idle { background: var(--ink-faint); }
+@keyframes ping {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, .45); }
+  70%, 100% { box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+}
+
+/* A switch is a checkbox: same events, same .checked, styled as a track. */
+.switch { display: inline-flex; align-items: center; gap: var(--s2); font-size: 12.5px; color: var(--ink-dim); cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch-track {
+  width: 30px; height: 17px; border-radius: var(--r-pill); position: relative; flex: none;
+  background: var(--surface-3); border: 1px solid var(--line-strong);
+  transition: background-color var(--ease), border-color var(--ease);
+}
+.switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px;
+  border-radius: 50%; background: var(--ink-dim); transition: transform var(--ease), background-color var(--ease);
+}
+.switch input:checked + .switch-track { background: var(--accent-soft); border-color: var(--accent-line); }
+.switch input:checked + .switch-track::after { transform: translateX(13px); background: var(--accent); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch:has(input:checked) { color: var(--ink); }
+
+/* The action bar above the table. */
+.toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
+  padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.toolbar input[type="text"] { flex: 1 1 280px; min-width: 0; padding: 6px 10px; font-size: 13px; }
+.toolbar select { padding: 6px 10px; font-size: 13px; }
+.toolbar input.mono-input[type="text"] { font-family: var(--mono); font-size: 12.5px; }
+button.small { padding: 5px 10px; font-size: 12.5px; }
+
+/* Notices: one line, a hairline and a tint. Never a paragraph card. */
+.notice {
+  margin: var(--s3) var(--s4) 0; padding: 7px var(--s3);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  font-size: 12.5px; background: var(--surface-2);
+}
+.notice-error { border-color: var(--danger-line); background: var(--danger-soft); color: #fca5a5; }
+.notice-warn { border-color: var(--warn-line); background: var(--warn-soft); color: #fde68a; }
+.notice[hidden], .notice-line[hidden] { display: none; }
+.notice-line { margin: var(--s2) var(--s4) 0; font-size: 12px; color: var(--ink-faint); }
+
+/* The data grid: dense rows, hairlines, a hover highlight, mono for machine values. */
+.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+.grid th, .grid td { text-align: left; padding: 8px var(--s4); border-bottom: 1px solid var(--line); vertical-align: middle; }
+.grid thead th {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-faint); background: var(--surface); position: sticky; top: 0;
+}
+.grid tbody tr { transition: background-color var(--ease); }
+.grid tbody tr:hover { background: var(--surface-2); }
+.grid tbody tr:last-child td { border-bottom: none; }
+.grid .col-roles { text-align: right; }
+.grid .player-seen { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); white-space: nowrap; }
+.grid .player-world { color: var(--ink-dim); }
+
+.player-name .player-title { font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 4px; }
+.player-title .copy-id { margin-left: 2px; }
+.player-idline { display: flex; align-items: center; gap: 4px; margin-top: 1px; }
+.player-name .player-id { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+.copy-id {
+  width: 22px; height: 22px; padding: 0; display: inline-grid; place-items: center;
+  border: 1px solid transparent; background: transparent; color: var(--ink-faint);
+}
+.copy-id svg { width: 13px; height: 13px; }
+.copy-id:hover:not(:disabled) { color: var(--ink); background: var(--surface-3); border-color: transparent; }
+.copy-id.is-copied { color: var(--ok); }
+.player-note { font-size: 11.5px; color: var(--warn); margin-top: 2px; }
+
+.player-status { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.player-status.is-online { color: var(--ok); }
+.player-status .for { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+.player-status.is-offline { color: var(--ink-dim); }
+.player-status.is-never { color: var(--ink-faint); }
+
+/* Role pills: a checkbox underneath, a coloured chip on top. */
+.roles { display: inline-flex; gap: 6px; justify-content: flex-end; }
+.role { position: relative; display: inline-flex; cursor: pointer; }
+.role input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.role-pill {
+  display: inline-flex; align-items: center; padding: 3px 9px;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  border-radius: var(--r-control); border: 1px solid var(--line-strong);
+  color: var(--ink-faint); background: transparent;
+  transition: color var(--ease), background-color var(--ease), border-color var(--ease);
+}
+.role:hover .role-pill { color: var(--ink-dim); border-color: var(--ink-faint); }
+.role input:focus-visible + .role-pill { outline: 2px solid var(--accent); outline-offset: 2px; }
+.role input:disabled + .role-pill { opacity: .35; cursor: not-allowed; }
+.role-admin input:checked + .role-pill { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.role-banned input:checked + .role-pill { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-line); }
+.role-permitted input:checked + .role-pill { color: var(--ok); background: var(--ok-soft); border-color: var(--ok-line); }
+/* On the permitted list while the whitelist is off: kept, not enforced. */
+.role-permitted.is-parked input:checked + .role-pill { background: transparent; border-style: dashed; }
+
+/* Empty states: small and dim, never a big hollow card. */
+.empty { display: grid; justify-items: center; gap: var(--s2); padding: var(--s7) var(--s4); color: var(--ink-faint); }
+.empty[hidden] { display: none; }
+.empty-icon { width: 40px; height: 40px; opacity: .55; }
+.empty p { margin: 0; font-size: 13px; }
+.empty-line { margin: 0; padding: var(--s5) var(--s4); font-size: 13px; color: var(--ink-faint); }
+
+/* The raw lists live in a modal, out of the main view. */
+.raw-dialog {
+  width: min(960px, calc(100vw - 32px)); max-width: none;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: var(--r-container);
+  padding: var(--s4); box-shadow: var(--shadow-2);
+}
+.raw-dialog::backdrop { background: rgba(4, 6, 9, .72); }
+.dialog-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.dialog-head h2 { margin: 0; }
+.raw-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3); margin-top: var(--s3); }
+.raw-editor { display: grid; gap: var(--s2); align-content: start; }
+.raw-editor textarea { width: 100%; font-family: var(--mono); font-size: 12px; resize: vertical; }
+.raw-editor .controls { margin-top: 0; }
+.raw-editor .notice-line { margin: 0; }
+@media (max-width: 760px) { .raw-grid { grid-template-columns: 1fr; } }
+
+/* Dialog titles stay titles, not section tags. */
+dialog h2 { text-transform: none; letter-spacing: -.005em; font-size: 15px; color: var(--ink); }
+
+@media (max-width: 720px) {
+  .panel-tools { margin-left: 0; }
+  .grid th:nth-child(3), .grid td:nth-child(3), .grid th:nth-child(4), .grid td:nth-child(4) { display: none; }
+  .grid th, .grid td { padding: 8px var(--s3); }
+}

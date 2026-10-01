@@ -129,10 +129,13 @@
     playersTable: document.getElementById("players-table"),
     playersBody: document.getElementById("players-body"),
     playersEmpty: document.getElementById("players-empty"),
-    onlineBody: document.getElementById("online-body"),
-    onlineTable: document.getElementById("online-table"),
-    onlineEmpty: document.getElementById("online-empty"),
-    onlineCount: document.getElementById("online-count"),
+    playersPanel: document.getElementById("panel-players"),
+    playersFilters: document.getElementById("players-filters"),
+    playersFilterEmpty: document.getElementById("players-filter-empty"),
+    playersFilterEmptyText: document.getElementById("players-filter-empty-text"),
+    playersRawButton: document.getElementById("btn-players-raw"),
+    rawDialog: document.getElementById("raw-dialog"),
+    rawClose: document.getElementById("btn-raw-close"),
     banDialog: document.getElementById("ban-dialog"),
     banName: document.getElementById("ban-dialog-name"),
     banDetail: document.getElementById("ban-dialog-detail"),
@@ -2144,17 +2147,25 @@
     };
 
     el.playersBody.textContent = "";
+    var shown = 0;
     for (var i = 0; i < lastPlayers.players.length; i++) {
+      if (!inFilter(lastPlayers.players[i])) { continue; }
       el.playersBody.appendChild(playerRow(lastPlayers.players[i], i));
+      shown++;
     }
-    el.playersTable.hidden = !lastPlayers.players.length;
-    el.playersEmpty.hidden = !!lastPlayers.players.length;
-    renderOnline(lastPlayers.players);
+    var any = !!lastPlayers.players.length;
+    el.playersTable.hidden = !shown;
+    el.playersEmpty.hidden = any;
+    el.playersFilterEmpty.hidden = !any || !!shown;
+    el.playersFilterEmptyText.textContent = playerFilter === "online"
+      ? "No vikings currently active" : "Nobody here yet";
+    renderFilters(lastPlayers.players);
 
     el.whitelistToggle.checked = lastPlayers.whitelistEnabled;
+    // Said only while it is on: that is the state that turns people away.
     el.whitelistNote.textContent = lastPlayers.whitelistEnabled
-      ? "On: only players ticked under Permitted can join. Everyone else is turned away."
-      : "Off: anyone with the join password can join.";
+      ? "Whitelist is on: only Permitted players can join." : "";
+    el.whitelistNote.hidden = !lastPlayers.whitelistEnabled;
     // Beside the column itself, because that is where the worry arises: a tick there
     // looks like it might shut people out, and while the list is off it cannot.
     el.permittedNote.hidden = lastPlayers.whitelistEnabled;
@@ -2196,20 +2207,44 @@
     if (stale) { stale.hidden = text === rawSeeds[kind]; }
   }
 
+  var COPY_ICON =
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" ' +
+    'rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3 11V3a1 1 0 0 1 ' +
+    '1-1h8" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+
   function playerRow(row, index) {
     var tr = document.createElement("tr");
+    if (row.online) { tr.className = "is-online"; }
     var who = document.createElement("td");
     who.className = "player-name";
     // The name only when the log let the watcher attach one with certainty; the ID
     // alone is the honest fallback, never a guess at whose name it is.
     var title = document.createElement("div");
+    title.className = "player-title";
     title.textContent = row.name || row.id;
+    if (row.first_seen) { title.title = "First joined " + formatSeen(row.first_seen); }
     who.appendChild(title);
+    var idLine = document.createElement("div");
+    idLine.className = "player-idline";
     if (row.name) {
-      var id = document.createElement("div");
-      id.className = "player-id muted";
+      var id = document.createElement("span");
+      id.className = "player-id";
       id.textContent = row.id;
-      who.appendChild(id);
+      idLine.appendChild(id);
+    }
+    var copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "copy-id";
+    copy.setAttribute("data-copy-id", row.id);
+    copy.setAttribute("aria-label", "Copy ID " + row.id);
+    copy.title = "Copy ID";
+    copy.innerHTML = COPY_ICON;  // a fixed icon, no data in it
+    if (row.name) {
+      idLine.appendChild(copy);
+      who.appendChild(idLine);
+    } else {
+      // No name: the title IS the ID, so the copy button sits beside it.
+      title.appendChild(copy);
     }
     var noteId = "";
     if (!row.file_id) {
@@ -2218,23 +2253,61 @@
       // worked. So this row cannot be ticked, and says what to do instead.
       noteId = "player-needs-id-" + index;
       var note = document.createElement("div");
-      note.className = "player-note muted small";
+      note.className = "player-note";
       note.id = noteId;
-      note.textContent = "Their ID could not be worked out from the server log, so " +
-        "they cannot be ticked here. Ask them for the ID the game shows when they " +
-        "press F2, and add it with Add a player by ID below.";
+      note.textContent = "ID unknown: add them by their F2 ID above.";
       who.appendChild(note);
     }
     tr.appendChild(who);
 
-    tr.appendChild(textCell(formatSeen(row.first_seen), "player-seen"));
+    tr.appendChild(statusCell(row));
     tr.appendChild(textCell(formatSeen(row.last_seen), "player-seen"));
-    tr.appendChild(textCell(row.last_world || "—", ""));
+    tr.appendChild(textCell(row.last_world || "—", "player-world"));
 
+    var roles = document.createElement("td");
+    roles.className = "col-roles";
+    var group = document.createElement("div");
+    group.className = "roles";
     for (var k = 0; k < PLAYER_LISTS.length; k++) {
-      tr.appendChild(toggleCell(PLAYER_LISTS[k], row, noteId));
+      group.appendChild(rolePill(PLAYER_LISTS[k], row, noteId));
     }
+    roles.appendChild(group);
+    tr.appendChild(roles);
     return tr;
+  }
+
+  function statusCell(row) {
+    var td = document.createElement("td");
+    var status = document.createElement("span");
+    var dot = document.createElement("span");
+    var label = document.createElement("span");
+    if (row.online) {
+      status.className = "player-status is-online";
+      dot.className = "dot dot-online";
+      label.textContent = "Online";
+      status.appendChild(dot);
+      status.appendChild(label);
+      var length = onlineFor(row.online_since);
+      if (length) {
+        var forText = document.createElement("span");
+        forText.className = "for";
+        forText.textContent = length.replace(/^for /, "");
+        status.appendChild(forText);
+      }
+      status.title = "Online since " + formatSeen(row.online_since);
+    } else if (row.seen) {
+      status.className = "player-status is-offline";
+      dot.className = "dot dot-idle";
+      label.textContent = "Offline";
+      status.appendChild(dot);
+      status.appendChild(label);
+    } else {
+      status.className = "player-status is-never";
+      label.textContent = "Never joined";
+      status.appendChild(label);
+    }
+    td.appendChild(status);
+    return td;
   }
 
   function textCell(text, cls) {
@@ -2244,9 +2317,11 @@
     return td;
   }
 
-  function toggleCell(kind, row, noteId) {
-    var td = document.createElement("td");
-    td.className = "player-toggle";
+  // A role pill: a real checkbox underneath (same events, same .checked, same safety
+  // rules), drawn as a coloured chip. Admin gold, Banned crimson, Permitted emerald.
+  function rolePill(kind, row, noteId) {
+    var label = document.createElement("label");
+    label.className = "role role-" + kind;
     var box = document.createElement("input");
     box.type = "checkbox";
     box.checked = onList(kind, row);
@@ -2259,11 +2334,93 @@
       box.setAttribute("aria-describedby", noteId);
     }
     if (kind === "permitted" && lastPlayers && !lastPlayers.whitelistEnabled && box.checked) {
-      td.className += " is-parked";
-      box.title = "On the permitted list, which is switched off right now.";
+      label.className += " is-parked";
+      label.title = "On the permitted list; the whitelist is off.";
     }
-    td.appendChild(box);
-    return td;
+    var pill = document.createElement("span");
+    pill.className = "role-pill";
+    pill.textContent = PLAYER_LIST_LABELS[kind];
+    label.appendChild(box);
+    label.appendChild(pill);
+    return label;
+  }
+
+  // ------------------------------------------------------------- filters
+
+  var playerFilter = "all";
+  var FILTER_TESTS = {
+    all: function () { return true; },
+    online: function (row) { return !!row.online; },
+    admin: function (row) { return !!row.is_admin; },
+    banned: function (row) { return !!row.is_banned; },
+    permitted: function (row) { return !!row.is_permitted; }
+  };
+
+  function inFilter(row) {
+    return (FILTER_TESTS[playerFilter] || FILTER_TESTS.all)(row);
+  }
+
+  function renderFilters(players) {
+    if (!el.playersFilters) { return; }
+    var buttons = el.playersFilters.querySelectorAll("[data-filter]");
+    for (var i = 0; i < buttons.length; i++) {
+      var name = buttons[i].getAttribute("data-filter");
+      var test = FILTER_TESTS[name] || FILTER_TESTS.all;
+      var count = 0;
+      for (var j = 0; j < players.length; j++) { if (test(players[j])) { count++; } }
+      var badge = buttons[i].querySelector("[data-count]");
+      if (badge) { badge.textContent = String(count); }
+      buttons[i].setAttribute("aria-pressed", name === playerFilter ? "true" : "false");
+    }
+  }
+
+  function setPlayerFilter(name) {
+    if (!FILTER_TESTS[name]) { return; }
+    playerFilter = name;
+    if (lastPlayers) { renderPlayers(lastPlayersPayload()); }
+  }
+
+  // Copies an ID; says so on the button for a moment. Falls back to a hidden textarea
+  // where the async clipboard API is missing (plain http on a LAN address).
+  function copyText(text, button) {
+    function done() {
+      if (!button) { return; }
+      button.classList.add("is-copied");
+      button.title = "Copied";
+      window.setTimeout(function () { button.classList.remove("is-copied"); button.title = "Copy ID"; }, 1200);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+      return;
+    }
+    fallbackCopy(text);
+    done();
+  }
+
+  function fallbackCopy(text) {
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand("copy"); } catch (err) { /* nothing more to try */ }
+    document.body.removeChild(area);
+  }
+
+  function openRawLists() {
+    if (el.rawDialog && typeof el.rawDialog.showModal === "function") {
+      el.rawDialog.showModal();
+    } else if (el.rawDialog) {
+      el.rawDialog.setAttribute("open", "");
+    }
+  }
+
+  function closeRawLists() {
+    if (!el.rawDialog) { return; }
+    if (el.rawDialog.close && el.rawDialog.open) { el.rawDialog.close(); }
+    else { el.rawDialog.removeAttribute("open"); }
   }
 
   function syncPlayerControls() {
@@ -2345,72 +2502,6 @@
     var minutes = Math.max(0, Math.floor((now - Number(since)) / 60));
     if (minutes < 60) { return "for " + minutes + " min"; }
     return "for " + Math.floor(minutes / 60) + " h " + (minutes % 60) + " min";
-  }
-
-  function renderOnline(players) {
-    if (!el.onlineBody) { return; }
-    var online = [];
-    for (var i = 0; i < players.length; i++) {
-      if (players[i].online) { online.push(players[i]); }
-    }
-    online.sort(function (a, b) { return (a.online_since || 0) - (b.online_since || 0); });
-    el.onlineBody.textContent = "";
-    for (var j = 0; j < online.length; j++) {
-      el.onlineBody.appendChild(onlineRow(online[j]));
-    }
-    el.onlineCount.textContent = String(online.length);
-    el.onlineTable.hidden = !online.length;
-    el.onlineEmpty.hidden = !!online.length;
-  }
-
-  function onlineRow(row) {
-    var tr = document.createElement("tr");
-    var who = document.createElement("td");
-    who.className = "player-name";
-    var title = document.createElement("div");
-    title.textContent = row.name || row.id;
-    who.appendChild(title);
-    if (row.name) {
-      var id = document.createElement("div");
-      id.className = "player-id muted";
-      id.textContent = row.id;
-      who.appendChild(id);
-    }
-    tr.appendChild(who);
-
-    var since = formatSeen(row.online_since);
-    var length = onlineFor(row.online_since);
-    tr.appendChild(textCell(length ? since + " · " + length : since, "player-seen"));
-
-    var actions = document.createElement("td");
-    actions.className = "online-actions";
-    actions.appendChild(onlineAction(row, "admin", "Make admin", "Admin", "data-online-admin"));
-    actions.appendChild(onlineAction(row, "banned", "Ban", "Banned", "data-online-ban"));
-    tr.appendChild(actions);
-    return tr;
-  }
-
-  // A button while the player is not on that list yet, a tag once they are. A player
-  // whose ID could not be worked out gets the button disabled, saying why: guessing
-  // an ID writes a line the game ignores while the page claims it worked.
-  function onlineAction(row, kind, label, done, attribute) {
-    if (row["is_" + kind]) {
-      var tag = document.createElement("span");
-      tag.className = "tag";
-      tag.textContent = done;
-      return tag;
-    }
-    var button = document.createElement("button");
-    button.type = "button";
-    button.className = kind === "banned" ? "ghost danger-quiet" : "ghost";
-    button.textContent = label;
-    button.setAttribute(attribute, row.file_id || "");
-    if (!row.file_id) {
-      button.disabled = true;
-      button.title = "Their ID could not be worked out from the server log. Add them " +
-        "by ID below, using the ID the game shows when they press F2.";
-    }
-    return button;
   }
 
   function onlinePlayer(fileId) {
@@ -2511,6 +2602,14 @@
     // the belt to that brace.
     if (!fileId || box.getAttribute("data-needs-id") === "true" || !lastPlayers) {
       repaintLastKnown();
+      return;
+    }
+    // Banning someone who is playing right now asks first; the box shows the file's
+    // state until the answer comes back.
+    var row = onlinePlayer(fileId);
+    if (kind === "banned" && box.checked && row && row.online) {
+      box.checked = false;
+      askBan(fileId);
       return;
     }
     sendPlayers("/api/players/list", { kind: kind, file_id: fileId, member: box.checked === true });
@@ -2652,18 +2751,16 @@
     // Esc closes a <dialog> on its own; make that forget the question too.
     el.whitelistDialog.addEventListener("close", function () { pendingWhitelist = null; });
 
-    el.onlineBody.addEventListener("click", function (event) {
-      var target = event.target.closest ? event.target : null;
-      if (!target || playersBusy) { return; }
-      var ban = target.closest("button[data-online-ban]");
-      if (ban && !ban.disabled) { askBan(ban.getAttribute("data-online-ban")); return; }
-      var admin = target.closest("button[data-online-admin]");
-      if (admin && !admin.disabled) {
-        sendPlayers("/api/players/list", {
-          kind: "admin", file_id: admin.getAttribute("data-online-admin"), member: true
-        });
-      }
+    el.playersFilters.addEventListener("click", function (event) {
+      var chip = event.target.closest ? event.target.closest("[data-filter]") : null;
+      if (chip) { setPlayerFilter(chip.getAttribute("data-filter")); }
     });
+    el.playersBody.addEventListener("click", function (event) {
+      var copy = event.target.closest ? event.target.closest("[data-copy-id]") : null;
+      if (copy) { copyText(copy.getAttribute("data-copy-id"), copy); }
+    });
+    el.playersRawButton.addEventListener("click", openRawLists);
+    el.rawClose.addEventListener("click", closeRawLists);
     el.banConfirm.addEventListener("click", confirmBan);
     el.banCancel.addEventListener("click", closeBan);
     el.banDialog.addEventListener("close", function () { pendingBan = null; });
@@ -2677,7 +2774,8 @@
       var box = rawEditor(kind);
       if (box) { box.addEventListener("input", function () { rawDirty[kind] = true; }); }
     });
-    el.playersTable.parentNode.addEventListener("click", function (event) {
+    // The raw editors sit in a modal now, so delegate from the whole panel.
+    el.playersPanel.addEventListener("click", function (event) {
       var target = event.target && event.target.closest ? event.target : null;
       if (!target) { return; }
       var save = target.closest("[data-raw-save]");

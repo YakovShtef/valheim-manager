@@ -13,7 +13,12 @@
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
   {# Tints the browser chrome on Android to match the page rather than leaving a
      white bar above a dark dashboard. #}
-  <meta name="theme-color" content="#0b0e12">
+  <meta name="theme-color" content="#090d12">
+  {# Inter for the interface, JetBrains Mono for anything a machine wrote: IDs,
+     times, sizes, log lines. Both fall back to system fonts when offline. #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>

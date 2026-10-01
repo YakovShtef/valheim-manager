@@ -599,45 +599,117 @@
    the two views are always painted from the same read and cannot disagree. #}
 <div id="panel-players" class="tabpanel" role="tabpanel" aria-labelledby="tab-players"
      tabindex="0" hidden>
-  {# Who is on the server right now, from the same log the roster is built from and
-     scoped to the current run of the game server. Refreshed every few seconds while
-     this tab is open. Only what the server can actually do is offered: the lists. #}
-  <section class="card online-card" aria-labelledby="online-title">
-    <h2 id="online-title">
-      Online now <span id="online-count" class="tag">0</span>
-    </h2>
-    <p id="online-empty" class="muted small">Nobody is on the server right now.</p>
-    <table class="settings" id="online-table" hidden>
+  {# One grid for everyone: the filter chips decide what it shows, the role pills are
+     the game's three list files, and every change is written straight to them. The
+     pills are real checkboxes underneath, so the keyboard, screen readers and the
+     whitelist safety rules all see the same control the tests drive. #}
+  <section class="panel players-panel" id="players-panel">
+    <header class="panel-head">
+      <h2 class="section-tag">
+        Players
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="About this list"
+                  aria-describedby="players-help">?</button>
+          <span class="hint-bubble" id="players-help" role="tooltip" hidden>
+            Everyone who has joined, plus anyone named in the game's admin, banned or
+            permitted files. Role changes are written to those files straight away.
+            Times use the server's clock.
+          </span>
+        </span>
+      </h2>
+      <div class="seg" id="players-filters" role="group" aria-label="Show players">
+        <button type="button" class="seg-btn" data-filter="all" aria-pressed="true">All <span class="seg-count" data-count="all">0</span></button>
+        <button type="button" class="seg-btn" data-filter="online" aria-pressed="false"><span class="dot dot-online" aria-hidden="true"></span>Online <span class="seg-count" data-count="online">0</span></button>
+        <button type="button" class="seg-btn" data-filter="admin" aria-pressed="false">Admins <span class="seg-count" data-count="admin">0</span></button>
+        <button type="button" class="seg-btn" data-filter="banned" aria-pressed="false">Banned <span class="seg-count" data-count="banned">0</span></button>
+        <button type="button" class="seg-btn" data-filter="permitted" aria-pressed="false">Permitted <span class="seg-count" data-count="permitted">0</span></button>
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="What can be done to a player here"
+                  aria-describedby="online-limits">?</button>
+          <span class="hint-bubble" id="online-limits" role="tooltip" hidden>
+            Kick, give items and teleport are in-game commands (F5 console, as an admin).
+            The game server cannot take them from this page.
+          </span>
+        </span>
+      </div>
+      <div class="panel-tools">
+        <label class="switch">
+          <input type="checkbox" id="whitelist-toggle">
+          <span class="switch-track" aria-hidden="true"></span>
+          Whitelist
+        </label>
+        <button type="button" id="btn-players-raw" class="ghost small">Raw lists</button>
+        <button type="button" id="btn-players-refresh" class="ghost small">Refresh</button>
+      </div>
+    </header>
+
+    <form id="player-add-form" class="toolbar" autocomplete="off">
+      <input id="player-add-id" name="id" type="text" spellcheck="false" class="mono-input"
+             aria-label="Player ID" placeholder="Add a player by ID, e.g. V_76561198012345678">
+      <select id="player-add-kind" aria-label="Which list">
+        <option value="admin">Admin</option>
+        <option value="banned">Banned</option>
+        <option value="permitted">Permitted</option>
+      </select>
+      <button type="submit" id="btn-player-add" class="primary small">Add</button>
+      <span class="hint-anchor">
+        <button type="button" class="info-dot" aria-label="Where to find an ID"
+                aria-describedby="player-add-help">?</button>
+        <span class="hint-bubble hint-bubble-end" id="player-add-help" role="tooltip" hidden>
+          Players see their own ID in game with F2. Copy it exactly; capitals matter.
+        </span>
+      </span>
+    </form>
+
+    <p id="players-error" class="notice notice-error" role="alert" hidden></p>
+    {# Filled in by app.js from list_env_conflicts: a valheim.env setting that makes the
+       game rewrite a list on every start would quietly undo this whole panel. #}
+    <p id="players-env-conflict" class="notice notice-error" role="alert" hidden></p>
+    <p id="whitelist-note" class="notice notice-warn" role="status" aria-live="polite" hidden></p>
+    {# While the whitelist is off, a Permitted tick is parked rather than written as the
+       line that would switch it on. #}
+    <p id="permitted-note" class="notice-line" hidden>
+      Whitelist is off: Permitted ticks are saved, and nobody is locked out until you
+      turn it on.
+    </p>
+
+    <table class="grid" id="players-table">
       <thead>
         <tr>
           <th scope="col">Player</th>
-          <th scope="col">Online since</th>
-          <th scope="col"><span class="visually-hidden">What you can do</span></th>
+          <th scope="col">Status</th>
+          <th scope="col">Last seen</th>
+          <th scope="col">World</th>
+          <th scope="col" class="col-roles">Roles</th>
         </tr>
       </thead>
-      <tbody id="online-body"></tbody>
+      <tbody id="players-body"></tbody>
     </table>
-    <p id="online-limits" class="muted small">
-      Kicking someone, giving them items or teleporting them can only be done from
-      inside the game, by an admin using the F5 console. The game server has no way to
-      take those commands from this page.
+    <div id="players-filter-empty" class="empty" hidden>
+      <svg class="empty-icon" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="19" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="24" cy="24" r="12" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="24" cy="24" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M24 24 L37 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <p id="players-filter-empty-text">No vikings currently active</p>
+    </div>
+    <p id="players-empty" class="empty-line" hidden>
+      No players yet. They appear here the first time they join.
     </p>
   </section>
 
-  {# Banning someone who is playing: the one destructive action in the online list,
-     so it asks first and says honestly what a ban is known to do. #}
+  {# Banning someone who is playing right now asks first, and says honestly what a ban
+     is known to do. #}
   <dialog id="ban-dialog" class="confirm" aria-labelledby="ban-dialog-title">
     <h2 id="ban-dialog-title">Ban this player?</h2>
     <p class="confirm-subject">
       <strong id="ban-dialog-name"></strong>
       <span id="ban-dialog-detail" class="muted small"></span>
     </p>
-    <p class="banner banner-error">
-      They will not be able to join again until you untick them under Banned.
-    </p>
+    <p class="notice notice-error">They can't join again until you remove the ban.</p>
     <p class="muted small">
-      Whether a ban also removes someone who is playing right now has not been tested on
-      this server yet, so they may stay on until they leave.
+      Not yet tested: whether a ban also removes someone who is already playing.
     </p>
     <div class="controls">
       <button type="button" id="btn-ban-cancel" class="ghost" autofocus>Cancel</button>
@@ -645,130 +717,56 @@
     </div>
   </dialog>
 
-  <section class="card players-card">
-    <h2>
-      Players
-      <button id="btn-players-refresh" class="ghost small">Refresh</button>
-    </h2>
-
-    <p id="players-error" class="banner banner-error" role="alert" hidden></p>
-    {# Filled in by app.js from list_env_conflicts. A setting in valheim.env that the
-       game uses to rewrite a list on every start would quietly undo this whole panel,
-       and the undo happens later, on a Start, where nobody would connect the two. #}
-    <p id="players-env-conflict" class="banner banner-error" role="alert" hidden></p>
-
-    <p class="muted">
-      Everyone who has joined your server, and anyone already named in the game's
-      admin, banned or permitted lists. Tick a box to put a player on a list and untick
-      it to take them off &mdash; the change is saved to the game's own list straight
-      away. Times are on your server's clock, the same as the one at the top of the page.
-    </p>
-
-    {# The permitted list is a whitelist: switched on, it lets in ONLY the players on
-       it. Turning it on asks first (the dialog below); turning it off does not, since
-       that lets people in rather than keeping them out. #}
-    <div class="players-whitelist">
-      <label class="check">
-        <input type="checkbox" id="whitelist-toggle">
-        Only let players on the permitted list join
-      </label>
-      <p id="whitelist-note" class="muted small" role="status" aria-live="polite"></p>
+  {# The escape hatch, kept out of the main view: the three files as the game reads
+     them, minus the header note the manager always keeps. #}
+  <dialog id="raw-dialog" class="raw-dialog" aria-labelledby="raw-dialog-title">
+    <div class="dialog-head">
+      <h2 id="raw-dialog-title">Raw lists</h2>
+      <button type="button" id="btn-raw-close" class="ghost small">Close</button>
     </div>
-
-    <table class="settings" id="players-table">
-      <thead>
-        <tr>
-          <th scope="col">Player</th>
-          <th scope="col">First joined</th>
-          <th scope="col">Last seen</th>
-          <th scope="col">World</th>
-          <th scope="col" class="player-toggle">Admin</th>
-          <th scope="col" class="player-toggle">Banned</th>
-          <th scope="col" class="player-toggle">Permitted</th>
-        </tr>
-      </thead>
-      <tbody id="players-body"></tbody>
-    </table>
-    {# Shown only while the permitted list is off. The manager parks a player ticked
-       then rather than writing the line that would switch the list on. #}
-    <p id="permitted-note" class="muted small" hidden>
-      The permitted list is switched off, so a tick under <strong>Permitted</strong>
-      only gets it ready. Nobody is locked out until you switch it on above.
-    </p>
-    <p id="players-empty" class="muted small" hidden>
-      Nobody has joined yet, and the game's lists are empty. Players appear here the
-      first time they join.
-    </p>
-
-    <form id="player-add-form" class="player-add" autocomplete="off">
-      <label for="player-add-id">Add a player by ID</label>
-      <div class="controls">
-        <select id="player-add-kind" aria-label="Which list to add them to">
-          <option value="admin">to the admin list</option>
-          <option value="banned">to the banned list</option>
-          <option value="permitted">to the permitted list</option>
-        </select>
-        <input id="player-add-id" name="id" type="text" spellcheck="false"
-               placeholder="for example V_76561198012345678">
-        <button type="submit" id="btn-player-add" class="ghost">Add</button>
-      </div>
-      <p class="muted small">
-        For someone who has not joined yet, or whose row says their ID is needed. Every
-        player can see their own ID in the game by pressing <strong>F2</strong>. Copy it
-        exactly as it is shown there &mdash; capitals matter.
-      </p>
-    </form>
-
-    {# The escape hatch. Seeded with the file as the game reads it, minus the note the
-       game keeps at the top (the manager always keeps that, whatever is typed here). #}
-    <h3 class="players-subhead">The lists as text</h3>
     <p class="muted small">
-      The same three lists, one player ID per line, exactly as the game reads them. Use
-      these for anything the table cannot do. A line that starts with
-      <code>// disabled-by-manager</code> is a player set aside while the permitted list
-      is switched off &mdash; the game ignores it, and switching the list back on puts
-      them back.
+      One ID per line, exactly as the game reads them.
+      <code>// disabled-by-manager</code> marks a player set aside while the whitelist is off.
     </p>
-    <details class="raw-editor" id="raw-admin">
-      <summary>Admin list</summary>
-      <textarea id="raw-admin-text" rows="6" spellcheck="false"
-                aria-label="The admin list, one player ID per line"></textarea>
-      <p id="raw-admin-stale" class="muted small" hidden>
-        The list has changed since you started typing. Your version is still here;
-        <strong>Undo my changes</strong> shows the list as it is now.
-      </p>
-      <div class="controls">
-        <button type="button" class="primary" data-raw-save="admin">Save</button>
-        <button type="button" class="ghost" data-raw-reset="admin">Undo my changes</button>
-      </div>
-    </details>
-    <details class="raw-editor" id="raw-banned">
-      <summary>Banned list</summary>
-      <textarea id="raw-banned-text" rows="6" spellcheck="false"
-                aria-label="The banned list, one player ID per line"></textarea>
-      <p id="raw-banned-stale" class="muted small" hidden>
-        The list has changed since you started typing. Your version is still here;
-        <strong>Undo my changes</strong> shows the list as it is now.
-      </p>
-      <div class="controls">
-        <button type="button" class="primary" data-raw-save="banned">Save</button>
-        <button type="button" class="ghost" data-raw-reset="banned">Undo my changes</button>
-      </div>
-    </details>
-    <details class="raw-editor" id="raw-permitted">
-      <summary>Permitted list</summary>
-      <textarea id="raw-permitted-text" rows="6" spellcheck="false"
-                aria-label="The permitted list, one player ID per line"></textarea>
-      <p id="raw-permitted-stale" class="muted small" hidden>
-        The list has changed since you started typing. Your version is still here;
-        <strong>Undo my changes</strong> shows the list as it is now.
-      </p>
-      <div class="controls">
-        <button type="button" class="primary" data-raw-save="permitted">Save</button>
-        <button type="button" class="ghost" data-raw-reset="permitted">Undo my changes</button>
-      </div>
-    </details>
-  </section>
+    <div class="raw-grid">
+      <section class="raw-editor" id="raw-admin">
+        <h3 class="section-tag">Admin</h3>
+        <textarea id="raw-admin-text" rows="8" spellcheck="false"
+                  aria-label="The admin list, one player ID per line"></textarea>
+        <p id="raw-admin-stale" class="notice-line" hidden>
+          Changed since you started typing. Undo shows the current list.
+        </p>
+        <div class="controls">
+          <button type="button" class="primary small" data-raw-save="admin">Save</button>
+          <button type="button" class="ghost small" data-raw-reset="admin">Undo</button>
+        </div>
+      </section>
+      <section class="raw-editor" id="raw-banned">
+        <h3 class="section-tag">Banned</h3>
+        <textarea id="raw-banned-text" rows="8" spellcheck="false"
+                  aria-label="The banned list, one player ID per line"></textarea>
+        <p id="raw-banned-stale" class="notice-line" hidden>
+          Changed since you started typing. Undo shows the current list.
+        </p>
+        <div class="controls">
+          <button type="button" class="primary small" data-raw-save="banned">Save</button>
+          <button type="button" class="ghost small" data-raw-reset="banned">Undo</button>
+        </div>
+      </section>
+      <section class="raw-editor" id="raw-permitted">
+        <h3 class="section-tag">Permitted</h3>
+        <textarea id="raw-permitted-text" rows="8" spellcheck="false"
+                  aria-label="The permitted list, one player ID per line"></textarea>
+        <p id="raw-permitted-stale" class="notice-line" hidden>
+          Changed since you started typing. Undo shows the current list.
+        </p>
+        <div class="controls">
+          <button type="button" class="primary small" data-raw-save="permitted">Save</button>
+          <button type="button" class="ghost small" data-raw-reset="permitted">Undo</button>
+        </div>
+      </section>
+    </div>
+  </dialog>
 
   {# Switching the permitted list on can lock the whole group out, so it asks first,
      names who WILL still be let in, and lands on Cancel. The manager cannot tell which

@@ -89,6 +89,8 @@ CASES = [
     "nobody_online_says_so",
     "banning_an_online_player_asks_first",
     "making_an_online_player_admin_posts_the_list_change",
+    "the_filter_chips_count_and_filter_the_grid",
+    "every_row_offers_its_id_for_copying",
     "the_ban_dialog_is_wired_for_browsers_that_have_it",
     "a_row_without_a_usable_id_cannot_be_ticked_and_says_why",
     "a_refused_tick_is_put_back_from_a_fresh_read",
