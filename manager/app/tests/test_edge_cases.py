@@ -6355,9 +6355,10 @@ def test_the_panels_still_say_the_thing_the_jargon_was_carrying(stack):
     assert "new settings take effect" in settings
     # ...and saving is not going to cost anyone their world.
     assert "never touched" in settings
-    # A world name nobody has used before means a NEW world, which is the one way to
-    # lose track of a save game from this panel.
-    assert "brand-new" in settings and "old world is kept" in settings
+    # The world is picked from the ones that exist; switching away never loses one,
+    # and new worlds are made on the Worlds tab, not by typing a name here.
+    assert "other worlds are" in settings and "kept" in settings
+    assert "To make a new world" in settings and "Worlds tab" in settings
 
     worlds = _panel_prose(page, "panel-worlds")
     # Load needs the server off, and takes effect on the next start.

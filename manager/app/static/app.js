@@ -1125,6 +1125,8 @@
     el.settingsForm.hidden = !editing;
     // One copy of the values on screen, not two: the table is the read-only view.
     el.settingsTable.hidden = editing;
+    var backupCards = document.getElementById("settings-backup-card");
+    if (backupCards) { backupCards.parentNode.hidden = editing; }
   }
 
   function isOn(value) {
@@ -1249,7 +1251,7 @@
     fillModifiers(mods);
     var fields = el.settingsForm.elements;
     fields.SERVER_NAME.value = values.SERVER_NAME || "";
-    fields.WORLD_NAME.value = values.WORLD_NAME || "";
+    fillWorldChoices(fields.WORLD_NAME, values.WORLD_NAME || "");
     // Already the mask when one is stored -- the real password is never in this page.
     fields.SERVER_PASS.value = values.SERVER_PASS || "";
     fields.SERVER_PORT.value = values.SERVER_PORT || "";
@@ -1258,6 +1260,21 @@
     editing = true;
     syncSettingsControls();
     fields.SERVER_NAME.focus();
+  }
+
+  // The editor's world picker: every world on the server, plus the stored name when no
+  // world has it yet -- a fresh install names one that the first Start creates, and
+  // the picker must not quietly change that to something else.
+  function fillWorldChoices(select, current) {
+    var names = (lastWorlds || []).map(function (world) { return world.name; });
+    select.textContent = "";
+    if (current && names.indexOf(current) < 0) {
+      select.appendChild(new Option(current + " (not created yet)", current));
+    }
+    for (var i = 0; i < names.length; i++) {
+      select.appendChild(new Option(names[i], names[i]));
+    }
+    select.value = current;
   }
 
   function closeEditor() {

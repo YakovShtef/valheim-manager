@@ -323,18 +323,22 @@
         <fieldset class="set-group">
           <legend class="section-tag">World</legend>
           <label for="field-WORLD_NAME">
-            World name
+            World
             <span class="hint-anchor">
-              <button type="button" class="info-dot" aria-label="About world names"
+              <button type="button" class="info-dot" aria-label="About choosing a world"
                       aria-describedby="world-name-hint">?</button>
               <span class="hint-bubble" id="world-name-hint" role="tooltip" hidden>
-                A name you have not used before makes a brand-new world the next time you
-                start. Your old world is kept, so you can switch back.
+                The world the server opens next time you start it. The other worlds are
+                kept, so you can switch back.
               </span>
             </span>
           </label>
-          <input id="field-WORLD_NAME" name="WORLD_NAME" type="text" required>
-          <p class="muted notice-line">A new name starts a brand-new world; your old world is kept.</p>
+          {# A choice between worlds that exist, filled by app.js from the worlds list.
+             Typing a name here used to make a new world on the next Start when it
+             matched none; the manager now refuses that too. #}
+          <select id="field-WORLD_NAME" name="WORLD_NAME" required></select>
+          <p class="muted notice-line">To make a new world, use Create on the
+            <button type="button" class="link-button" data-goto-tab="worlds">Worlds tab</button>.</p>
 
           {# The modifier controls. Rendered from app/modifiers.py: the options are its
              vocabulary, and the categories come out in its own order, because the

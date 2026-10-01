@@ -1105,6 +1105,7 @@ dialog h2 { text-transform: none; letter-spacing: -.005em; font-size: 15px; colo
 }
 .link-button:hover { color: var(--ink); }
 .settings-groups-more { padding-top: 0; }
+.settings-groups-more[hidden] { display: none; }
 .set-group-note {
   margin: var(--s2) 0 0;
   font-size: 12px;

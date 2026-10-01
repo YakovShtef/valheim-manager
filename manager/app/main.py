@@ -1152,6 +1152,23 @@ def create_app(
         except SetupInputError as exc:
             return _refused(400, str(exc))
 
+        if "WORLD_NAME" in values:
+            # The panel picks between worlds that exist; it does not make them. A name
+            # with no save behind it would have Valheim generate a fresh world on the
+            # next Start -- a typo away from "where did our world go". Creating one is
+            # the Worlds tab's job. Exact match: Valheim's own lookup is a file name,
+            # and on Linux `kakui` is not `Kakui`.
+            try:
+                existing = {world.name for world in world_store.worlds()}
+            except WorldError as exc:
+                return _refused(500, str(exc))
+            if values["WORLD_NAME"] not in existing:
+                return _refused(
+                    400,
+                    f'There is no world called "{values["WORLD_NAME"]}". Make it with '
+                    "Create on the Worlds tab, or upload it there, then pick it here.",
+                )
+
         # Validation normalises (a stripped port, for instance), so the diff is redone
         # against what would actually be written.
         updates = {key: value for key, value in values.items() if current.get(key, "") != value}

@@ -3,9 +3,9 @@
 The log is the only source of who has played here: vanilla Valheim exposes no RCON
 and no query interface. Three line shapes matter, all captured from a live server:
 
-    Got connection SteamID 76561198012345678      -- a join, with identity
+    Got connection SteamID 76561198012345678       -- a join, with identity
     Got character ZDOID from Ragnar : -1297766619:5 -- a name, with NO identity
-    Closing socket 76561198012345678              -- a leave, with identity
+    Closing socket 76561198012345678               -- a leave, with identity
 
 The name line shares no field with the other two: -1297766619 is a ZDO owner id,
 unrelated to the platform id. Attaching a name to a player is therefore inference,
