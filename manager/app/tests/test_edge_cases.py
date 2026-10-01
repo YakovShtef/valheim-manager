@@ -5254,6 +5254,119 @@ def test_every_panel_is_pinned_hidden_by_its_own_rule(stack):
         assert not touches_panel, f"{selector} sets display on a panel after its guard"
 
 
+# A tag that never carries a closer, so an unmatched one is not an error.
+VOID_TAGS = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input",
+     "link", "meta", "param", "source", "track", "wbr"}
+)
+
+TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?(/?)>", re.S)
+
+
+def _open_elements(page: str) -> tuple[list[tuple[str, int]], list[str]]:
+    """Walk the rendered markup, returning what is still open and what went wrong.
+
+    Browsers repair mis-nesting silently, which is exactly why this has to be
+    checked here: a card that is never closed still *renders*, just with the next
+    section swallowed into it.
+    """
+    stack: list[tuple[str, int]] = []
+    problems: list[str] = []
+    for match in TAG_RE.finditer(page):
+        closing, tag, self_closing = match.group(1), match.group(2).lower(), match.group(3)
+        if tag in VOID_TAGS or self_closing:
+            continue
+        line = page[: match.start()].count("\n") + 1
+        if not closing:
+            stack.append((tag, line))
+            continue
+        if stack and stack[-1][0] == tag:
+            stack.pop()
+            continue
+        for index in range(len(stack) - 1, -1, -1):
+            if stack[index][0] == tag:
+                unclosed = ", ".join(f"<{t}> opened at line {ln}" for t, ln in stack[index + 1:])
+                problems.append(f"</{tag}> at line {line} closes over: {unclosed}")
+                del stack[index:]
+                break
+        else:
+            problems.append(f"</{tag}> at line {line} closes nothing that is open")
+    return stack, problems
+
+
+def test_the_dashboard_markup_is_well_formed(stack):
+    """Every element opened is closed, in order, with no stray closing tags.
+
+    This is not pedantry. Both halves of it shipped broken at once: the worlds card
+    and its upload form were never closed, so the delete dialog ended up nested
+    inside the form, and the mods card was closed early, which left the mod name
+    field and the Add button outside the card that is supposed to contain them.
+    Every one of the tests above still passed, because they read the page as text
+    and ask only whether an id appears between two offsets.
+    """
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    still_open, problems = _open_elements(page)
+    assert not problems, "the dashboard markup is mis-nested:\n  " + "\n  ".join(problems)
+    assert not still_open, "never closed: " + ", ".join(
+        f"<{tag}> opened at line {line}" for tag, line in still_open
+    )
+
+
+# Every submit control on the dashboard, and the form whose `submit` handler in
+# app.js is the thing that actually runs when it is pressed.
+SUBMIT_BUTTON_FORMS = {
+    "btn-settings-save": "settings-form",
+    "btn-world-new": "world-new-form",
+    "btn-world-upload": "world-upload-form",
+    "btn-mod-upload": "mod-upload-form",
+}
+
+
+def test_every_submit_button_is_inside_the_form_it_submits(stack):
+    """A ``type="submit"`` button is wired to its *nearest enclosing* form, and
+    every one of these forms is driven by its own ``submit`` handler in app.js.
+
+    So being inside *a* form is not enough -- it has to be inside the right one.
+    `Add mod` shipped inside the worlds upload form instead of the mods one,
+    because the mods form was closed early and the worlds form was never closed
+    at all. Pressing it ran the world-upload handler's guard and then nothing.
+    """
+    with TestClient(stack["app"]) as client:
+        login(client)
+        page = client.get("/").text
+
+    open_forms: list[str] = []
+    enclosing: dict[str, str | None] = {}
+    for match in re.finditer(r"<(/?)(form|button)\b([^>]*)>", page, re.S):
+        closing, tag, attrs = match.group(1), match.group(2), match.group(3)
+        if tag == "form":
+            if closing:
+                if open_forms:
+                    open_forms.pop()
+            else:
+                found = re.search(r'id="([^"]*)"', attrs)
+                open_forms.append(found.group(1) if found else "<unnamed form>")
+            continue
+        if closing or 'type="submit"' not in attrs:
+            continue
+        found = re.search(r'id="([^"]*)"', attrs)
+        if found:
+            enclosing[found.group(1)] = open_forms[-1] if open_forms else None
+
+    missing = sorted(set(SUBMIT_BUTTON_FORMS) - set(enclosing))
+    assert not missing, f"these submit buttons are not on the page at all: {missing}"
+
+    wrong = {
+        button: f"is in {enclosing[button] or 'no form'}, expected {form}"
+        for button, form in SUBMIT_BUTTON_FORMS.items()
+        if enclosing[button] != form
+    }
+    assert not wrong, f"submit buttons wired to the wrong form: {wrong}"
+
+
 # =====================================================================
 # Deleting a world, and making a new one.
 #
