@@ -94,6 +94,40 @@ class DockerControlError(RuntimeError):
         }
 
 
+def telemetry_from_stats(raw: dict[str, Any]) -> dict[str, float | int | None]:
+    """CPU % and memory from one Docker stats sample, the way `docker stats` shows them.
+
+    CPU is the container's share of the whole machine's CPU time since the previous
+    reading, times its cores -- 100% is one full core. Docker's first sample has no
+    previous reading, and that is reported as unknown rather than as 0%, which would
+    read as idle. Memory leaves out the file cache the kernel can drop at will
+    (``inactive_file`` on cgroup v2, ``cache`` on v1), as the CLI does.
+    """
+    cpu = raw.get("cpu_stats") or {}
+    pre = raw.get("precpu_stats") or {}
+    cpu_percent: float | None = None
+    try:
+        cpu_delta = cpu["cpu_usage"]["total_usage"] - pre["cpu_usage"]["total_usage"]
+        system_delta = cpu["system_cpu_usage"] - pre["system_cpu_usage"]
+        cores = cpu.get("online_cpus") or len(cpu["cpu_usage"].get("percpu_usage") or []) or 1
+        if system_delta > 0 and cpu_delta >= 0:
+            cpu_percent = round(cpu_delta / system_delta * cores * 100.0, 1)
+    except (KeyError, TypeError):
+        cpu_percent = None
+
+    memory = raw.get("memory_stats") or {}
+    usage = memory.get("usage")
+    limit = memory.get("limit")
+    stats = memory.get("stats") or {}
+    cache = stats.get("inactive_file", stats.get("cache", 0)) or 0
+    used = max(int(usage) - int(cache), 0) if isinstance(usage, (int, float)) else None
+    return {
+        "cpu_percent": cpu_percent,
+        "memory_used": used,
+        "memory_limit": int(limit) if isinstance(limit, (int, float)) and limit else None,
+    }
+
+
 @dataclass(frozen=True)
 class GameRun:
     """One run of the game container: from one Start to the next Stop or crash.
@@ -311,6 +345,28 @@ class DockerControl:
             if self._action is not None and not self._action.alive():
                 self._action = None
             return self._action
+
+    def telemetry(self) -> dict[str, Any]:
+        """Live CPU and memory for the game server, or ``available: False``.
+
+        One stats sample, which Docker takes over about a second -- so callers run
+        this off the event loop. Never raises: a stopped server, a missing
+        container, and a proxy that refuses the call all read as unavailable.
+        """
+        empty = {"available": False, "cpu_percent": None, "memory_used": None,
+                 "memory_limit": None}
+        try:
+            container = self.get_container()
+            if container is None:
+                return empty
+            state = (container.attrs or {}).get("State", {}) or {}
+            if str(state.get("Status", "")) != "running":
+                return empty
+            numbers = telemetry_from_stats(container.stats(stream=False) or {})
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.info("Telemetry unavailable: %s", exc)
+            return empty
+        return {"available": True, **numbers}
 
     def current_run(self) -> GameRun | None:
         """The game container's current run, or ``None`` when there is no container.

@@ -49,6 +49,9 @@ STATIC = Path(__file__).resolve().parents[1] / "static"
 CASES = [
     "lands_on_console_with_no_stored_tab",
     "the_console_is_never_rebuilt_across_a_switch",
+    "a_log_line_is_split_into_time_source_and_message",
+    "an_error_line_is_marked_as_one",
+    "the_filter_hides_lines_without_the_text_and_copy_takes_only_what_shows",
     "returning_to_the_console_resumes_following",
     "returning_to_the_console_leaves_a_parked_view_alone",
     "a_switch_issues_no_request_and_leaves_the_socket_alone",

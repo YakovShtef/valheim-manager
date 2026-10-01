@@ -273,6 +273,44 @@ check("the_console_is_never_rebuilt_across_a_switch", () => {
   eq(p.doc.getElementById("follow").checked, false, "the follow checkbox was reset");
 });
 
+const GAME_LINE = "Oct  1 10:45:28 supervisord: valheim-server 10/01/2026 10:45:28: Got connection SteamID 76561198012345678";
+const ERROR_LINE = "Oct  1 10:45:30 supervisord: valheim-server 10/01/2026 10:45:30: Failed to load world";
+
+check("a_log_line_is_split_into_time_source_and_message", () => {
+  const p = makePage();
+  p.push({ type: "log", lines: [GAME_LINE] });
+  const line = p.doc.querySelector("#console .line");
+  eq([line.querySelector(".t").textContent, line.querySelector(".src").textContent,
+      line.querySelector(".m").textContent],
+     ["10:45:28", "server", "Got connection SteamID 76561198012345678"], "the columns");
+});
+
+check("an_error_line_is_marked_as_one", () => {
+  const p = makePage();
+  p.push({ type: "log", lines: [GAME_LINE, ERROR_LINE] });
+  const lines = [...p.doc.querySelectorAll("#console .line")];
+  eq(lines.map((line) => line.classList.contains("lvl-error")), [false, true], "error marks");
+});
+
+check("the_filter_hides_lines_without_the_text_and_copy_takes_only_what_shows", () => {
+  const p = makePage();
+  p.push({ type: "log", lines: [GAME_LINE, ERROR_LINE] });
+  const filter = p.doc.getElementById("console-filter");
+  filter.value = "failed";
+  filter.dispatchEvent(new p.win.Event("input"));
+  const shown = [...p.doc.querySelectorAll("#console .line")].filter((l) => !l.classList.contains("is-filtered"));
+  eq(shown.length, 1, "lines left showing");
+  // A line arriving while a filter is set is filtered too.
+  p.push({ type: "log", lines: ["Oct  1 10:46:00 supervisord: valheim-server 10/01/2026 10:46:00: World saved"] });
+  eq(p.doc.querySelectorAll("#console .line:not(.is-filtered)").length, 1, "a new non-matching line showed");
+  let copied = null;
+  p.win.isSecureContext = false;
+  // The copy fallback appends its own textarea to <body>; read that one.
+  p.doc.execCommand = () => { copied = [...p.doc.querySelectorAll("body > textarea")].pop().value; return true; };
+  p.doc.getElementById("btn-console-copy").click();
+  eq(copied, ERROR_LINE, "Copy took more than the filtered view");
+});
+
 check("returning_to_the_console_resumes_following", () => {
   // The bug this pins: while the panel is display:none every scroll metric reads 0,
   // so append()'s follow-scroll is a no-op for every line that arrives meanwhile and

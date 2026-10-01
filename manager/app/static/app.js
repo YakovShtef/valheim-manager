@@ -34,6 +34,11 @@
     image: document.getElementById("meta-image"),
     banner: document.getElementById("banner"),
     console: document.getElementById("console"),
+    consoleFilter: document.getElementById("console-filter"),
+    consoleCopy: document.getElementById("btn-console-copy"),
+    telUptime: document.getElementById("tel-uptime"),
+    telCpu: document.getElementById("tel-cpu"),
+    telMem: document.getElementById("tel-mem"),
     follow: document.getElementById("follow"),
     settings: document.getElementById("settings-table"),
     passPeek: document.getElementById("btn-pass-peek"),
@@ -345,11 +350,76 @@
   // visible, which is precisely why selectTab has to call it again on the way in.
   function followTail() { el.console.scrollTop = el.console.scrollHeight; }
 
+  // A log line, split into the columns the console shows: the server's own time, the
+  // process that wrote it, and the message without the game's second timestamp.
+  // Lines that do not look like that (the manager's own notes, say) are message-only.
+  var ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\^\[\[[0-9;]*m/g;
+  var LINE_RE = /^([A-Z][a-z]{2}\s+\d{1,2}\s(\d{2}:\d{2}:\d{2}))\s+(?:supervisord:\s+)?([A-Za-z][\w.-]*)(?:\[\d+\])?:?\s?(.*)$/;
+  var GAME_STAMP_RE = /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}:\s*/;
+
+  function parseLine(text) {
+    var clean = String(text).replace(ANSI_RE, "");
+    var match = LINE_RE.exec(clean);
+    if (!match) { return { time: "", source: "", message: clean }; }
+    return {
+      time: match[2],
+      source: match[3].replace(/^valheim-/, ""),
+      message: match[4].replace(GAME_STAMP_RE, "")
+    };
+  }
+
+  // Valheim's log has no levels of its own; these are read off the words.
+  function lineLevel(message) {
+    if (/\b(error|exception|failed|fatal)\b/i.test(message)) { return "error"; }
+    if (/\bwarn(ing)?\b/i.test(message)) { return "warn"; }
+    return "";
+  }
+
+  var consoleFilterText = "";
+
+  function lineMatches(node) {
+    return !consoleFilterText ||
+      (node.getAttribute("data-raw") || "").toLowerCase().indexOf(consoleFilterText) !== -1;
+  }
+
+  function applyConsoleFilter() {
+    consoleFilterText = (el.consoleFilter.value || "").trim().toLowerCase();
+    var lines = el.console.children;
+    for (var i = 0; i < lines.length; i++) {
+      lines[i].classList.toggle("is-filtered", !lineMatches(lines[i]));
+    }
+  }
+
+  function copyConsole() {
+    var lines = el.console.children;
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      if (!lines[i].classList.contains("is-filtered")) { out.push(lines[i].getAttribute("data-raw") || ""); }
+    }
+    copyText(out.join("\n"), el.consoleCopy);
+  }
+
   function append(text, cls) {
     var stick = el.follow.checked || atBottom();
+    var parts = parseLine(text);
     var node = document.createElement("span");
-    if (cls) { node.className = cls; }
-    node.textContent = text + "\n";
+    var level = cls === "sys" ? "" : lineLevel(parts.message);
+    node.className = "line" + (cls ? " " + cls : "") + (level ? " lvl-" + level : "");
+    node.setAttribute("data-raw", String(text));
+    var time = document.createElement("span");
+    time.className = "t";
+    time.textContent = parts.time;
+    var source = document.createElement("span");
+    source.className = "src";
+    source.textContent = parts.source;
+    var message = document.createElement("span");
+    message.className = "m";
+    message.textContent = parts.message;
+    node.appendChild(time);
+    node.appendChild(source);
+    node.appendChild(message);
+    node.appendChild(document.createTextNode("\n"));
+    if (!lineMatches(node)) { node.classList.add("is-filtered"); }
     el.console.appendChild(node);
     while (el.console.childNodes.length > MAX_CONSOLE_LINES) {
       el.console.removeChild(el.console.firstChild);
@@ -905,9 +975,9 @@
     paintBadge();
     el.message.textContent = status.message || "";
     el.state.textContent = status.container_state || (status.container_exists ? "?" : "no container");
-    el.started.textContent = status.started_at && status.started_at.indexOf("0001-01-01") !== 0
-      ? new Date(status.started_at).toLocaleString()
-      : "–";
+    // On the server's clock, like every other time on the page.
+    var startedEpoch = startedAt(status);
+    el.started.textContent = startedEpoch ? formatTaken(startedEpoch) : "–";
     if (status.image) { el.image.textContent = status.image; }
 
     var busy = pendingAction || !!busyPhases[status.phase];
@@ -1236,6 +1306,64 @@
     tr.appendChild(th);
     tr.appendChild(td);
     return tr;
+  }
+
+  // ------------------------------------------------------------ telemetry
+
+  var TELEMETRY_MS = 5000;
+
+  function startedAt(status) {
+    if (!status || !status.started_at || status.started_at.indexOf("0001-01-01") === 0) { return 0; }
+    var ms = Date.parse(status.started_at);
+    return isFinite(ms) ? ms / 1000 : 0;
+  }
+
+  function serverUp() {
+    return !!lastStatus && (lastStatus.phase === "running" || lastStatus.phase === "ready");
+  }
+
+  function consoleVisible() {
+    var panel = document.getElementById("panel-console");
+    return !!panel && !panel.hidden;
+  }
+
+  function formatSpan(seconds) {
+    var s = Math.max(0, Math.floor(seconds));
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    return (h ? h + "h " : "") + pad2(m) + "m " + pad2(s % 60) + "s";
+  }
+
+  function paintUptime() {
+    if (!el.telUptime) { return; }
+    var started = startedAt(lastStatus);
+    if (!serverUp() || !started || clock.epoch === null) { el.telUptime.textContent = "–"; return; }
+    var now = clock.epoch + (Date.now() - clock.takenAt) / 1000;
+    el.telUptime.textContent = formatSpan(now - started);
+  }
+
+  function gigabytes(bytes) { return (bytes / 1073741824).toFixed(1); }
+
+  function renderTelemetry(numbers) {
+    var ok = numbers && numbers.available === true;
+    el.telCpu.textContent = ok && typeof numbers.cpu_percent === "number"
+      ? Math.round(numbers.cpu_percent) + "%" : "–";
+    el.telMem.textContent = ok && numbers.memory_used !== null && numbers.memory_limit
+      ? gigabytes(numbers.memory_used) + " / " + gigabytes(numbers.memory_limit) + " GB" : "–";
+  }
+
+  // One page-wide timer rather than one started by a tab switch: a switch must never
+  // call the manager. Each tick fetches only while the Console is on screen and the
+  // server is up, so nobody pays for a stats sample they are not looking at.
+  function initTelemetry() {
+    if (!el.telCpu) { return; }
+    window.setInterval(paintUptime, 1000);
+    window.setInterval(function () {
+      if (!consoleVisible() || !serverUp()) { renderTelemetry(null); return; }
+      fetch("/api/telemetry", { credentials: "same-origin" })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(renderTelemetry, function () { renderTelemetry(null); });
+    }, TELEMETRY_MS);
   }
 
   function renderModifiers(mods) {
@@ -2447,9 +2575,10 @@
   function copyText(text, button) {
     function done() {
       if (!button) { return; }
+      var before = button.title;
       button.classList.add("is-copied");
       button.title = "Copied";
-      window.setTimeout(function () { button.classList.remove("is-copied"); button.title = "Copy ID"; }, 1200);
+      window.setTimeout(function () { button.classList.remove("is-copied"); button.title = before; }, 1200);
     }
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
@@ -3018,6 +3147,9 @@
     post("/api/stop", { force: true });
   });
   el.clear.addEventListener("click", function () { el.console.textContent = ""; });
+  el.consoleFilter.addEventListener("input", applyConsoleFilter);
+  el.consoleCopy.addEventListener("click", copyConsole);
+  initTelemetry();
 
   if (el.settingsForm && el.settingsEdit) {
     MASK = el.settingsForm.getAttribute("data-mask") || MASK;

@@ -1984,6 +1984,14 @@ def create_app(
         require_same_origin(request)
         return await run_in_threadpool(_players_whitelist, await _json_body(request))
 
+    @app.get("/api/telemetry")
+    async def api_telemetry(request: Request) -> JSONResponse:
+        """Live CPU and memory for the Console's status bar. Polled only while the
+        Console is on screen and the server is up, so its one-second stats sample is
+        not paid for by anyone who is not looking at it."""
+        require_session(request)
+        return JSONResponse(await run_in_threadpool(control.telemetry))
+
     @app.get("/api/backups")
     async def api_backups(request: Request) -> JSONResponse:
         require_session(request)

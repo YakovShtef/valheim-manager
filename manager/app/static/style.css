@@ -991,3 +991,42 @@ dialog h2 { text-transform: none; letter-spacing: -.005em; font-size: 15px; colo
 .settings-form.settings-edit fieldset.modifiers legend { padding: 0; float: left; width: 100%; margin-bottom: var(--s2); }
 .settings-form.settings-edit fieldset.modifiers > legend + * { clear: both; }
 .set-group .notice-line { margin: 2px 0 0; }
+
+/* ----------------------------------------------------------------- console */
+.telemetry {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s5);
+  padding: var(--s3) var(--s4);
+}
+.tel-state { display: grid; gap: 2px; min-width: 180px; flex: 1 1 220px; }
+.tel-message { font-size: 13px; color: var(--ink); }
+.tel-stats { display: flex; flex-wrap: wrap; gap: var(--s5); margin: 0; }
+.tel-stats > div { display: grid; gap: 1px; }
+.tel-stats dt { font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint); }
+.tel-stats dd { margin: 0; font-family: var(--mono); font-size: 13px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tel-controls { margin: 0; }
+.tel-controls button.small { margin-left: 0; }
+.tel-meta { border-top: 1px solid var(--line); padding: 6px var(--s4); }
+.tel-meta summary { cursor: pointer; font-size: 12px; color: var(--ink-faint); }
+.tel-meta .kv { margin: var(--s2) 0 var(--s1); background: var(--bg); }
+
+.console-head .console-filter {
+  flex: 1 1 220px; max-width: 360px; padding: 5px 10px; font-size: 12.5px; font-family: var(--mono);
+}
+.console-card .console {
+  margin: 0; border: none; border-radius: 0 0 var(--r-container) var(--r-container);
+  background: #06090d; height: 62vh; min-height: 320px;
+  padding: var(--s2) 0; font-family: var(--mono); font-size: 12px; line-height: 1.6;
+}
+.console .line { display: flex; gap: var(--s3); padding: 0 var(--s4); white-space: pre-wrap; }
+.console .line:hover { background: rgba(255, 255, 255, .025); }
+.console .line.is-filtered { display: none; }
+.console .t { flex: 0 0 64px; color: var(--ink-faint); }
+.console .src { flex: 0 0 64px; color: var(--info); opacity: .75; overflow: hidden; text-overflow: ellipsis; }
+.console .m { flex: 1 1 auto; min-width: 0; color: #c9d1db; overflow-wrap: anywhere; }
+.console .t:empty, .console .src:empty { visibility: hidden; }
+.console .lvl-error .m { color: var(--danger); }
+.console .lvl-warn .m { color: var(--warn); }
+.console .ready .m { color: var(--ok); }
+.console .sys .m { color: var(--ink-faint); font-style: italic; }
+/* Solid, not frosted: the strip is a toolbar, not a pane of glass. */
+.tabs { background: var(--bg); backdrop-filter: none; }

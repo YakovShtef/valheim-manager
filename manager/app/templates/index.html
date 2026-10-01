@@ -73,38 +73,58 @@
    the panel was kept open to show. #}
 <div id="panel-console" class="tabpanel" role="tabpanel" aria-labelledby="tab-console"
      tabindex="0">
-  <section class="card">
-    <h2>Status</h2>
-    <p id="status-message" class="muted">Checking on your server…</p>
-    <dl class="kv">
-      {# Plain labels for the same four facts. The name is still the one `docker rm`
-         takes, which is why it is on the page at all -- but an operator reading it
-         does not need to be told it is a container to use it. #}
-      <dt>Name</dt><dd id="meta-container">{{ container_name }}</dd>
-      <dt>Game server</dt><dd id="meta-image">{{ image }}</dd>
-      <dt>State</dt><dd id="meta-state">–</dd>
-      <dt>Started</dt><dd id="meta-started">–</dd>
-    </dl>
-    <div class="controls">
-      <button id="btn-start" class="primary" disabled>Start</button>
-      <button id="btn-stop" class="danger" disabled>Stop</button>
-      <button id="btn-restart" class="ghost" disabled>Restart</button>
-      <button id="btn-force" class="danger" hidden>Force stop</button>
+  {# The status bar: what the server is doing, its live numbers, and the three
+     controls, on one line. The labelled facts underneath (the name is the one a
+     `docker rm` takes) are folded away until something is wrong. #}
+  <section class="panel console-status">
+    <div class="telemetry">
+      <div class="tel-state">
+        <span class="section-tag">Server</span>
+        <span id="status-message" class="tel-message">Checking on your server…</span>
+      </div>
+      <dl class="tel-stats">
+        <div><dt>State</dt><dd id="meta-state">–</dd></div>
+        <div><dt>Uptime</dt><dd id="tel-uptime">–</dd></div>
+        <div><dt>CPU</dt><dd id="tel-cpu">–</dd></div>
+        <div><dt>Memory</dt><dd id="tel-mem">–</dd></div>
+      </dl>
+      <div class="controls tel-controls">
+        <button id="btn-start" class="primary small" disabled>Start</button>
+        <button id="btn-stop" class="danger small" disabled>Stop</button>
+        <button id="btn-restart" class="ghost small" disabled>Restart</button>
+        <button id="btn-force" class="danger small" hidden>Force stop</button>
+      </div>
     </div>
+    <details class="tel-meta">
+      <summary>Details</summary>
+      <dl class="kv">
+        <dt>Name</dt><dd id="meta-container">{{ container_name }}</dd>
+        <dt>Game server</dt><dd id="meta-image">{{ image }}</dd>
+        <dt>Started</dt><dd id="meta-started">–</dd>
+      </dl>
+    </details>
   </section>
-
   {# The console is never rebuilt: hiding this panel leaves the <pre>'s scrollback,
-     its scroll position, the follow checkbox and the WebSocket exactly as they are. #}
-  <section class="card console-card">
-    <h2>
-      Live console
-      <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
-      <button id="btn-clear" class="ghost small">Clear</button>
-    </h2>
+     its scroll position, the follow switch and the WebSocket exactly as they are.
+     Read-only on purpose: the game server takes no commands from outside the game. #}
+  <section class="panel console-card">
+    <header class="panel-head console-head">
+      <h2 class="section-tag">Console</h2>
+      <input type="search" id="console-filter" class="console-filter" spellcheck="false"
+             placeholder="Filter lines" aria-label="Show only lines containing">
+      <div class="panel-tools">
+        <label class="switch">
+          <input type="checkbox" id="follow" checked>
+          <span class="switch-track" aria-hidden="true"></span>
+          Follow
+        </label>
+        <button type="button" id="btn-console-copy" class="ghost small">Copy</button>
+        <button id="btn-clear" class="ghost small">Clear</button>
+      </div>
+    </header>
     <pre id="console" class="console" aria-live="polite"></pre>
   </section>
 </div>
-
 <div id="panel-settings" class="tabpanel" role="tabpanel" aria-labelledby="tab-settings"
      tabindex="0" hidden>
   <section class="panel settings-panel">
