@@ -4682,7 +4682,7 @@ def test_the_env_example_documents_the_shared_group_and_the_caps(project_root):
 
 def test_the_readme_covers_switching_uploading_and_the_group(project_root):
     readme = (project_root / "README.md").read_text(encoding="utf-8")
-    assert "Worlds: switching and adding new ones" in readme
+    assert "**Worlds**" in readme and "Upload a world folder" in readme
     assert "MANAGER_GID" in readme and "PGID" in readme
     assert "seed" in readme
     assert "permanently" in readme
@@ -4690,12 +4690,13 @@ def test_the_readme_covers_switching_uploading_and_the_group(project_root):
 
 
 def test_the_readme_leads_with_the_things_a_first_time_host_gets_wrong(project_root):
-    """The README was rewritten for someone who has never used Docker, and the risk of
-    that rewrite is losing a warning along with the jargon it was buried in. These are
-    the four that cost real money or a real world if they go missing."""
+    """Every rewrite of the README risks losing a warning along with the prose it was
+    in. These are the four that cost real money or a real world if they go missing, and
+    they belong in the Quick start, before anyone has run anything."""
     readme = (project_root / "README.md").read_text(encoding="utf-8")
-    quick_start, _, rest = readme.partition("Advanced / Under the hood")
-    assert rest, "the deep material should sit under an Advanced section"
+    _, _, after_heading = readme.partition("## Quick start")
+    quick_start, _, rest = after_heading.partition("\n## ")
+    assert quick_start and rest, "the README should open with a Quick start section"
 
     # Which ports to forward -- and which one NOT to.
     assert "2456" in quick_start and "2457" in quick_start and "2458" in quick_start
