@@ -624,6 +624,12 @@
       </thead>
       <tbody id="players-body"></tbody>
     </table>
+    {# Shown only while the permitted list is off. The manager parks a player ticked
+       then rather than writing the line that would switch the list on. #}
+    <p id="permitted-note" class="muted small" hidden>
+      The permitted list is switched off, so a tick under <strong>Permitted</strong>
+      only gets it ready. Nobody is locked out until you switch it on above.
+    </p>
     <p id="players-empty" class="muted small" hidden>
       Nobody has joined yet, and the game's lists are empty. Players appear here the
       first time they join.

@@ -113,6 +113,81 @@ def test_parked_entries_round_trip(tmp_path):
     assert lists.read(PERMITTED).parked == (A,)
 
 
+# ------------------------------------------- add_member / remove_member
+#
+# What the panel's routes call. Identical to add/remove for admin and banned; for the
+# permitted list they never write the first active line, because that one line is
+# what switches the whitelist on.
+
+
+def test_add_member_parks_on_a_permitted_list_that_is_off(lists):
+    entry = lists.add_member(PERMITTED, A)
+    assert entry.ids == ()
+    assert entry.parked == (A,)
+    assert lists.read(PERMITTED).ids == ()
+
+
+def test_add_member_keeps_the_parked_order_and_does_not_duplicate(lists):
+    lists.add_member(PERMITTED, A)
+    lists.add_member(PERMITTED, B)
+    lists.add_member(PERMITTED, A)
+    assert lists.read(PERMITTED).parked == (A, B)
+
+
+def test_add_member_keeps_the_header_of_a_permitted_list_that_is_off(lists, tmp_path):
+    lists.add_member(PERMITTED, A)
+    text = (tmp_path / "permittedlist.txt").read_text(encoding="utf-8")
+    assert text == f"// List permitted players ID ONE per line\n// disabled-by-manager {A}\n"
+
+
+def test_add_member_on_a_permitted_list_that_is_on_writes_an_active_line(lists):
+    lists.write(PERMITTED, ids=(B,))
+    entry = lists.add_member(PERMITTED, A)
+    assert entry.ids == (B, A)
+    assert entry.parked == ()
+
+
+def test_add_member_while_on_moves_a_parked_id_to_active_rather_than_doubling_it(lists):
+    lists.write(PERMITTED, ids=(B,), parked=(A,))
+    entry = lists.add_member(PERMITTED, A)
+    assert entry.ids == (B, A)
+    assert entry.parked == ()
+
+
+def test_add_member_on_admin_and_banned_is_plain_add(lists):
+    assert lists.add_member(ADMIN, A).ids == (A,)
+    assert lists.add_member(BANNED, A).ids == (A,)
+    assert lists.add_member(ADMIN, A).ids == (A,)
+
+
+def test_remove_member_unparks_from_a_permitted_list_that_is_off(lists):
+    lists.write(PERMITTED, ids=(), parked=(A, B))
+    entry = lists.remove_member(PERMITTED, A)
+    assert entry.ids == ()
+    assert entry.parked == (B,)
+
+
+def test_remove_member_on_permitted_clears_both_active_and_parked(lists):
+    lists.write(PERMITTED, ids=(A, B), parked=(A,))
+    entry = lists.remove_member(PERMITTED, A)
+    assert entry.ids == (B,)
+    assert entry.parked == ()
+
+
+def test_remove_member_of_an_absent_id_writes_nothing(lists, tmp_path):
+    path = tmp_path / "permittedlist.txt"
+    before = path.read_text(encoding="utf-8")
+    lists.remove_member(PERMITTED, A)
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_remove_member_on_admin_leaves_its_parked_lines_alone(lists):
+    lists.write(ADMIN, ids=(A,), parked=(B,))
+    entry = lists.remove_member(ADMIN, A)
+    assert entry.ids == ()
+    assert entry.parked == (B,)
+
+
 def test_an_unknown_list_kind_is_refused(lists):
     with pytest.raises(PermissionListError):
         lists.read("friends")

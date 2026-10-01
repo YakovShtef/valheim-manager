@@ -46,19 +46,23 @@ const SETTINGS_ROWS = [
 // The shape /api/players answers with (main.py _roster_payload). Three rows, one of
 // each kind the table has to draw: a named player who has joined, a player whose log
 // ID could not be converted to the file form (file_id null), and an ID that is only in
-// a file and has never joined. The permitted list is OFF: its entries are parked.
+// a file and has never joined -- plus a parked-only ID, which the manager also gives a
+// row. The permitted list is OFF: its entries are parked, and is_permitted counts them.
 const RAGNAR = "V_76561198012345678";
 const PLAYERS = (over = {}) => ({
   players: [
     { id: RAGNAR, platform_id: "76561198012345678", file_id: RAGNAR, name: "Ragnar",
       first_seen: 1699990000, last_seen: 1700000040, last_world: "Dedicated", seen: true,
-      is_admin: true, is_banned: false, is_permitted: false },
+      is_admin: true, is_banned: false, is_permitted: true },
     { id: "xbox-2535411", platform_id: "xbox-2535411", file_id: null, name: null,
       first_seen: 1699000000, last_seen: 1699500000, last_world: "Dedicated", seen: true,
       is_admin: false, is_banned: false, is_permitted: false },
     { id: "V_1111", platform_id: null, file_id: "V_1111", name: null,
       first_seen: null, last_seen: null, last_world: null, seen: false,
       is_admin: false, is_banned: true, is_permitted: false },
+    { id: "V_2222", platform_id: null, file_id: "V_2222", name: null,
+      first_seen: null, last_seen: null, last_world: null, seen: false,
+      is_admin: false, is_banned: false, is_permitted: true },
   ],
   lists: {
     admin: { ids: [RAGNAR], comments: ["// List admin players ID  ONE per line"], parked: [] },
@@ -743,7 +747,7 @@ check("the_players_tab_shows_its_panel", async () => {
   p.tab("players").click();
   eq(p.selected(), ["players"], "selected tab");
   eq(p.shown(), ["panel-players"], "visible panels");
-  eq(rows(p).length, 3, "roster rows drawn from /api/players");
+  eq(rows(p).length, 4, "roster rows drawn from /api/players");
   eq(rows(p)[0].children[0].textContent.indexOf("Ragnar") !== -1, true, "the name is shown");
 });
 
@@ -905,30 +909,66 @@ check("turning_the_permitted_list_on_asks_first", async () => {
      "the switch-on button takes focus");
 });
 
-check("ticking_permitted_while_the_list_is_off_never_switches_it_on", async () => {
-  // One active line in permittedlist.txt locks out everyone not on it. With the list
-  // off, a tick must add the player among the parked entries -- never write the line.
+check("ticking_permitted_while_the_list_is_off_goes_to_the_manager_like_the_others", async () => {
+  // Keeping the whitelist off is the MANAGER's rule now (a permitted add while the
+  // list is off is parked, never written active), so the column posts exactly like
+  // Admin and Banned -- and says, beside itself, that a tick locks nobody out.
   const p = await playersPage(null);
+  const note = p.doc.getElementById("permitted-note");
+  eq(note.hidden, false, "the note beside Permitted is hidden while the list is off");
+  eq(/nobody is locked out/i.test(note.textContent), true, "the note does not say nobody is locked out: " + note.textContent);
+  eq(box(p, 0, "permitted").checked, true, "a parked player is not shown as on the list");
+
   tick(p, box(p, 2, "permitted"), true);
   await p.settle();
-  await p.settle();
-  eq(p.posts.filter((x) => x.path === "/api/players/list"), [], "the tick wrote an active line");
-  const raw = p.posts.filter((x) => x.path === "/api/players/raw");
-  eq(raw.length, 1, "the tick was not saved");
-  const lines = raw[0].body.text.split("\n").filter((l) => l.trim());
-  eq(lines.filter((l) => !l.startsWith("//")), [], "the saved list has an active line in it");
-  eq(lines, [`// disabled-by-manager ${RAGNAR}`, "// disabled-by-manager V_2222",
-             "// disabled-by-manager V_1111"], "the parked entries after the tick");
+  eq(p.posts.map((x) => [x.path, x.body]),
+     [["/api/players/list", { kind: "permitted", file_id: "V_1111", member: true }]],
+     "what the Permitted tick sent");
 
-  // Adding by ID to a list that is off would do the same, so it is refused here.
+  // Adding by ID goes straight to the manager too.
   const before = p.posts.length;
   p.doc.getElementById("player-add-kind").value = "permitted";
   p.doc.getElementById("player-add-id").value = "V_3333";
   p.doc.getElementById("player-add-form")
     .dispatchEvent(new p.win.Event("submit", { bubbles: true, cancelable: true }));
   await p.settle();
-  eq(p.posts.slice(before), [], "adding by ID switched the list on");
-  eq(p.doc.getElementById("players-error").hidden, false, "the refusal is not explained");
+  eq(p.posts.slice(before).map((x) => [x.path, x.body]),
+     [["/api/players/add", { kind: "permitted", id: "V_3333" }]], "what Add sent");
+
+  // With the list on, the note goes away: a tick there IS in force.
+  const on = await playersPage(PLAYERS({ whitelist_enabled: true }));
+  eq(on.doc.getElementById("permitted-note").hidden, true, "the 'nobody is locked out' note shows while the list is on");
+});
+
+check("saving_active_permitted_lines_while_the_list_is_off_asks_first", async () => {
+  // The raw editor writes exactly what is typed, so it is the one other way to switch
+  // the whitelist on -- and gets the same question the switch does.
+  const p = await playersPage(null);
+  const editor = p.doc.getElementById("raw-permitted-text");
+  editor.value = editor.value + "V_3333\n";
+  editor.dispatchEvent(new p.win.Event("input", { bubbles: true }));
+  const asked = [];
+  p.win.confirm = (text) => { asked.push(text); return false; };
+  p.doc.querySelector('[data-raw-save="permitted"]').click();
+  await p.settle();
+  eq(asked.length, 1, "saving an active line did not ask");
+  eq(asked[0].indexOf("V_3333") !== -1, true, "the question does not name who would be let in: " + asked[0]);
+  eq(p.posts, [], "saying no still saved it");
+  eq(editor.value.indexOf("V_3333") !== -1, true, "saying no threw away what was typed");
+
+  p.win.confirm = () => true;
+  p.doc.querySelector('[data-raw-save="permitted"]').click();
+  await p.settle();
+  eq(p.posts.map((x) => x.path), ["/api/players/raw"], "saying yes did not save exactly once");
+
+  // Parked-only text is not switching anything on: no question.
+  const quiet = await playersPage(null);
+  const q = [];
+  quiet.win.confirm = (text) => { q.push(text); return false; };
+  quiet.doc.querySelector('[data-raw-save="permitted"]').click();
+  await quiet.settle();
+  eq(q, [], "saving parked lines only asked");
+  eq(quiet.posts.length, 1, "saving parked lines only was not sent");
 });
 
 check("a_list_variable_in_valheim_env_is_named_in_a_warning", async () => {

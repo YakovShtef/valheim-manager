@@ -393,14 +393,14 @@ def test_a_missing_file_id_is_refused(client_with_roster):
 
 
 def test_an_unwritable_list_is_a_500_not_a_400(client_with_roster):
-    """A ``PermissionListError`` out of ``add``/``remove`` is a fault on the
+    """A ``PermissionListError`` out of ``add_member``/``remove_member`` is a fault on the
     manager's side (the same file a bad-permission read would fail on), not
     something the caller typed wrong -- so it answers 500, like the GET route.
     """
     client, _ = client_with_roster
     message = "Could not write /config/adminlist.txt: [Errno 13] Permission denied"
     with patch(
-        "app.main.PermissionLists.add",
+        "app.main.PermissionLists.add_member",
         side_effect=PermissionListError(message),
     ):
         response = client.post(
@@ -598,13 +598,23 @@ def test_the_raw_editor_refuses_an_unknown_list_kind(client_with_roster):
 # ---------------------------------------------- POST /api/players/whitelist
 
 
-def test_disabling_the_whitelist_parks_its_entries(client_with_roster):
-    client, tmp = client_with_roster
+def _switch_permitted_on_with(client, file_id):
+    """An ACTIVE permitted list holding ``file_id`` -- the whitelist in force.
+
+    Through the raw editor on purpose: a permitted add while the list is off parks
+    the player instead (see the next section), so only the raw editor and the
+    whitelist route can put an active line there.
+    """
     client.post(
-        "/api/players/add",
-        json={"kind": "permitted", "id": "V_7000"},
+        "/api/players/raw",
+        json={"kind": "permitted", "text": f"{file_id}\n"},
         headers={"Origin": ORIGIN},
     )
+
+
+def test_disabling_the_whitelist_parks_its_entries(client_with_roster):
+    client, tmp = client_with_roster
+    _switch_permitted_on_with(client, "V_7000")
     body = client.post(
         "/api/players/whitelist", json={"enabled": False}, headers={"Origin": ORIGIN}
     ).json()
@@ -616,11 +626,7 @@ def test_disabling_the_whitelist_parks_its_entries(client_with_roster):
 def test_a_parked_whitelist_does_not_lock_anyone_out(client_with_roster):
     """Parked entries are comments, so the game reads the list as empty."""
     client, tmp = client_with_roster
-    client.post(
-        "/api/players/add",
-        json={"kind": "permitted", "id": "V_7000"},
-        headers={"Origin": ORIGIN},
-    )
+    _switch_permitted_on_with(client, "V_7000")
     client.post(
         "/api/players/whitelist", json={"enabled": False}, headers={"Origin": ORIGIN}
     )
@@ -630,11 +636,7 @@ def test_a_parked_whitelist_does_not_lock_anyone_out(client_with_roster):
 
 def test_re_enabling_restores_the_parked_entries(client_with_roster):
     client, _ = client_with_roster
-    client.post(
-        "/api/players/add",
-        json={"kind": "permitted", "id": "V_7000"},
-        headers={"Origin": ORIGIN},
-    )
+    _switch_permitted_on_with(client, "V_7000")
     client.post(
         "/api/players/whitelist", json={"enabled": False}, headers={"Origin": ORIGIN}
     )
@@ -687,6 +689,148 @@ def test_an_unwritable_whitelist_is_a_500_not_a_400(client_with_roster):
         )
     assert response.status_code == 500, response.text
     assert response.json()["error"] == message
+
+
+# ------------------------------- the permitted list while the whitelist is off
+#
+# One active line in permittedlist.txt lets that player in and turns everyone else
+# away. So while the list holds no active ids, a permitted add through the table or
+# by ID must PARK the player -- prepare the list -- and never write the line that
+# would switch it on. Only /api/players/whitelist may do that, after the UI asks.
+
+PERMITTED_HEADER = "// List permitted players ID ONE per line\n"
+
+
+def _active_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.strip() and not line.startswith("//")]
+
+
+def _permitted_text(tmp) -> str:
+    path = tmp / "config" / "permittedlist.txt"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _seed_permitted(tmp, text: str) -> None:
+    (tmp / "config" / "permittedlist.txt").write_text(text, encoding="utf-8")
+
+
+def _row(body, file_id):
+    return {row["id"]: row for row in body["players"]}[file_id]
+
+
+_PERMITTED_ADDS = (
+    ("/api/players/list", lambda fid: {"kind": "permitted", "file_id": fid, "member": True}),
+    ("/api/players/add", lambda fid: {"kind": "permitted", "id": fid}),
+)
+
+
+@pytest.mark.parametrize("route, body_for", _PERMITTED_ADDS, ids=["list", "add"])
+@pytest.mark.parametrize(
+    "seed",
+    [None, PERMITTED_HEADER, PERMITTED_HEADER + "// disabled-by-manager V_5000\n"],
+    ids=["no-file", "empty-file", "already-parked"],
+)
+def test_a_permitted_add_while_the_whitelist_is_off_parks_the_player(
+    client_with_roster, route, body_for, seed
+):
+    client, tmp = client_with_roster
+    if seed is not None:
+        _seed_permitted(tmp, seed)
+    already = ["V_5000"] if seed and "V_5000" in seed else []
+
+    response = client.post(route, json=body_for(A_FILE_ID), headers={"Origin": ORIGIN})
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    text = _permitted_text(tmp)
+    assert _active_lines(text) == [], f"an active line switched the whitelist on:\n{text}"
+    assert body["lists"]["permitted"]["ids"] == []
+    assert body["lists"]["permitted"]["parked"] == [*already, A_FILE_ID]
+    assert body["whitelist_enabled"] is False
+    assert _row(body, A_FILE_ID)["is_permitted"] is True
+    if seed:
+        # The game's own header note is still there.
+        assert text.startswith(PERMITTED_HEADER)
+
+
+def test_a_repeated_permitted_add_while_off_does_not_duplicate_the_parked_entry(
+    client_with_roster,
+):
+    client, tmp = client_with_roster
+    for _ in range(2):
+        body = client.post(
+            "/api/players/list",
+            json={"kind": "permitted", "file_id": A_FILE_ID, "member": True},
+            headers={"Origin": ORIGIN},
+        ).json()
+    assert body["lists"]["permitted"]["parked"] == [A_FILE_ID]
+
+
+def test_a_permitted_remove_while_off_unparks_the_player(client_with_roster):
+    client, tmp = client_with_roster
+    _seed_permitted(
+        tmp,
+        PERMITTED_HEADER
+        + f"// disabled-by-manager {A_FILE_ID}\n// disabled-by-manager V_5000\n",
+    )
+    body = client.post(
+        "/api/players/list",
+        json={"kind": "permitted", "file_id": A_FILE_ID, "member": False},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert body["lists"]["permitted"]["parked"] == ["V_5000"]
+    assert body["lists"]["permitted"]["ids"] == []
+    assert body["whitelist_enabled"] is False
+    assert _row(body, A_FILE_ID)["is_permitted"] is False
+    assert A_FILE_ID not in _permitted_text(tmp)
+
+
+def test_a_permitted_add_while_the_whitelist_is_on_writes_an_active_line(
+    client_with_roster,
+):
+    """Unchanged behaviour: a list already in force takes the player as an active
+    line, since that is what "on the permitted list" means while it is on."""
+    client, tmp = client_with_roster
+    _seed_permitted(tmp, PERMITTED_HEADER + "V_5000\n")
+    body = client.post(
+        "/api/players/list",
+        json={"kind": "permitted", "file_id": A_FILE_ID, "member": True},
+        headers={"Origin": ORIGIN},
+    ).json()
+    assert _active_lines(_permitted_text(tmp)) == ["V_5000", A_FILE_ID]
+    assert body["lists"]["permitted"]["ids"] == ["V_5000", A_FILE_ID]
+    assert body["lists"]["permitted"]["parked"] == []
+    assert body["whitelist_enabled"] is True
+    assert _row(body, A_FILE_ID)["is_permitted"] is True
+
+
+def test_only_the_whitelist_route_switches_the_permitted_list_on(client_with_roster):
+    """The parked player goes live when, and only when, the list is switched on."""
+    client, tmp = client_with_roster
+    client.post(
+        "/api/players/add",
+        json={"kind": "permitted", "id": A_FILE_ID},
+        headers={"Origin": ORIGIN},
+    )
+    assert _active_lines(_permitted_text(tmp)) == []
+    body = client.post(
+        "/api/players/whitelist", json={"enabled": True}, headers={"Origin": ORIGIN}
+    ).json()
+    assert body["whitelist_enabled"] is True
+    assert _active_lines(_permitted_text(tmp)) == [A_FILE_ID]
+
+
+def test_a_parked_player_who_never_joined_still_gets_a_row(client_with_roster):
+    """Parked is still ON the list. A row only from active ids would hide exactly the
+    people an operator set aside while the whitelist was off."""
+    client, tmp = client_with_roster
+    _seed_permitted(tmp, PERMITTED_HEADER + "// disabled-by-manager V_5000\n")
+    body = client.get("/api/players").json()
+    row = _row(body, "V_5000")
+    assert row["seen"] is False
+    assert row["is_permitted"] is True
+    assert row["file_id"] == "V_5000"
+    assert body["whitelist_enabled"] is False
 
 
 # ------------------------------------- auth and origin enforcement (writes)

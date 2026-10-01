@@ -157,6 +157,52 @@ class PermissionLists:
         kept = tuple(pid for pid in current.ids if pid != file_id)
         return self.write(kind, kept, parked=current.parked)
 
+    # The two methods below are what the panel's routes use. They differ from add()
+    # and remove() only for the permitted list, which is a WHITELIST: one active line
+    # in it lets that player in and turns everyone else away. So while it holds no
+    # active ids -- switched off -- adding a player must not write an active line,
+    # or a tick meant to prepare the list would switch it on with one player on it
+    # and nobody asked. The player is parked instead, ready for when the list is
+    # switched on, which only the whitelist route does, after a confirmation.
+
+    def add_member(self, kind: str, file_id: str) -> ListFile:
+        """Put ``file_id`` on the list without ever switching the whitelist on.
+
+        Admin and banned: an active line, exactly as ``add``. Permitted while it has
+        no active ids: parked (deduplicated, order kept). Permitted while it is on:
+        an active line, and out of the parked set if it was also there.
+        """
+        current = self.read(kind)
+        if kind == PERMITTED and not current.ids:
+            if file_id in current.parked:
+                return current
+            return self.write(kind, (), parked=(*current.parked, file_id))
+        if kind == PERMITTED and file_id in current.parked:
+            parked = tuple(pid for pid in current.parked if pid != file_id)
+            ids = current.ids if file_id in current.ids else (*current.ids, file_id)
+            return self.write(kind, ids, parked=parked)
+        if file_id in current.ids:
+            return current
+        return self.write(kind, (*current.ids, file_id), parked=current.parked)
+
+    def remove_member(self, kind: str, file_id: str) -> ListFile:
+        """Take ``file_id`` off the list.
+
+        For the permitted list that means out of the active ids AND the parked set:
+        "on the permitted list" covers both (the roster ticks a parked player too), so
+        taking someone off has to clear both or the tick would come straight back.
+        """
+        current = self.read(kind)
+        if file_id not in current.ids and (
+            kind != PERMITTED or file_id not in current.parked
+        ):
+            return current
+        ids = tuple(pid for pid in current.ids if pid != file_id)
+        parked = current.parked
+        if kind == PERMITTED:
+            parked = tuple(pid for pid in current.parked if pid != file_id)
+        return self.write(kind, ids, parked=parked)
+
 
 # Valheim 1.0 addresses players as [Platform]_[UserID], case-sensitive. For Steam the
 # working form is "V_" plus the SteamID64 -- established by community-valheim-tools

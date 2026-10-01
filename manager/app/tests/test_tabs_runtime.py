@@ -84,7 +84,8 @@ CASES = [
     "a_row_without_a_usable_id_cannot_be_ticked_and_says_why",
     "a_refused_tick_is_put_back_from_a_fresh_read",
     "turning_the_permitted_list_on_asks_first",
-    "ticking_permitted_while_the_list_is_off_never_switches_it_on",
+    "ticking_permitted_while_the_list_is_off_goes_to_the_manager_like_the_others",
+    "saving_active_permitted_lines_while_the_list_is_off_asks_first",
     "a_list_variable_in_valheim_env_is_named_in_a_warning",
 ]
 

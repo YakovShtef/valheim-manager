@@ -5116,7 +5116,7 @@ def test_the_dashboard_lands_on_the_console_tab(stack):
         page = client.get("/").text
 
     tabs = _tab_attributes(page)
-    assert [tab["data-tab"] for tab in tabs] == ["console", "settings", "worlds", "mods"]
+    assert [tab["data-tab"] for tab in tabs] == ["console", "settings", "worlds", "mods", "players"]
 
     selected = [tab for tab in tabs if tab["aria-selected"] == "true"]
     assert len(selected) == 1, "exactly one tab may be selected"
@@ -5126,7 +5126,7 @@ def test_the_dashboard_lands_on_the_console_tab(stack):
     # ...and the Console panel is the only one showing.
     panels = _panels(page)
     assert "hidden" not in panels["panel-console"].split(">")[0]
-    for panel_id in ("panel-settings", "panel-worlds", "panel-mods"):
+    for panel_id in ("panel-settings", "panel-worlds", "panel-mods", "panel-players"):
         assert "hidden" in panels[panel_id].split(">")[0], panel_id
 
 
