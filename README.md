@@ -255,5 +255,5 @@ one fails after a copy change, update the test deliberately rather than loosenin
 
 ## License
 
-No license has been chosen yet. Until a `LICENSE` file is added the code is under
-default copyright: it can be read, but not reused or redistributed.
+[MIT](LICENSE). The Valheim dedicated server and the game image it runs are separate
+projects under their own terms.
