@@ -135,6 +135,19 @@ ADMIN_PASSWORD_HASH=
 SESSION_SECRET=
 ```
 
+### Forgotten login
+
+```bash
+docker compose exec manager python tools/reset_admin.py && docker compose restart manager
+```
+
+It shows the current username (Enter keeps it) and asks for a new password twice.
+Only the credential file is rewritten; settings, worlds, backups and the player roster
+are untouched. Everyone signed in is signed out (`--keep-sessions` to avoid that). If
+the manager is not running, use `docker compose run --rm --no-deps manager` in place
+of `docker compose exec manager`. If the login comes from `manager.env`, change that
+file instead.
+
 ### `settings/valheim.env`
 
 The game image's own variables: `SERVER_NAME`, `WORLD_NAME`, `SERVER_PASS`,
@@ -231,6 +244,7 @@ manager/
     templates/, static/     server-rendered HTML, vanilla JS, CSS
     tests/                  pytest suite, plus jsdom tests in tests/js
   tools/hash_password.py    password hash for manager.env
+  tools/reset_admin.py      new admin username/password for a forgotten login
 ```
 
 ## Contributing

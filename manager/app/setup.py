@@ -164,38 +164,14 @@ class SetupSession:
         Raises ``SetupInputError`` with a message written for the operator. The
         password itself never reaches the message.
         """
-        user = one_line(admin_user).strip()
-        if not user:
-            raise SetupInputError("Choose an admin username.")
-        if len(user) > MAX_ADMIN_USER_LENGTH:
-            raise SetupInputError(
-                f"The admin username must be at most {MAX_ADMIN_USER_LENGTH} characters."
-            )
-        if any(character.isspace() for character in user):
-            raise SetupInputError("The admin username cannot contain spaces.")
-
-        if password != confirm:
-            raise SetupInputError("The two passwords do not match.")
-        if len(password) < MIN_PASSWORD_LENGTH:
-            raise SetupInputError(
-                f"The admin password must be at least {MIN_PASSWORD_LENGTH} characters. "
-                "This login controls your whole server, and nothing slows down "
-                "limiting, so a short password is the whole exposure."
-            )
-        if "\n" in password or "\r" in password:
-            raise SetupInputError("The admin password cannot contain a line break.")
-        if algo not in HASH_ALGORITHMS:
-            raise SetupInputError(f"Unknown password algorithm {algo!r}.")
-
-        try:
-            password_hash = hash_password(password, algo=algo)
-        except PasswordTooLongError as exc:
-            # bcrypt's 72-byte limit, surfaced with its own explanation plus the way
-            # out that exists on this page.
-            raise SetupInputError(
-                f"{exc} Choose argon2 below to use this passphrase as it is."
-            ) from exc
-
+        user, password_hash = admin_credentials(
+            admin_user,
+            password,
+            confirm,
+            algo,
+            # The way out that exists on this page.
+            too_long_hint="Choose argon2 below to use this passphrase as it is.",
+        )
         return PreparedSetup(
             state=ManagerState(
                 admin_user=user,
@@ -233,6 +209,48 @@ class SetupSession:
             self.state_store.path,
         )
         return prepared.state
+
+
+def admin_credentials(
+    admin_user: str, password: str, confirm: str, algo: str, *, too_long_hint: str
+) -> tuple[str, str]:
+    """``(username, password_hash)`` for the admin account, or ``SetupInputError``.
+
+    One set of rules for both ways an admin account is made: the first-run wizard and
+    ``tools/reset_admin.py``. ``too_long_hint`` is how each caller says "use argon2",
+    since one has a radio button and the other a flag. The password itself never
+    reaches a message.
+    """
+    user = one_line(admin_user).strip()
+    if not user:
+        raise SetupInputError("Choose an admin username.")
+    if len(user) > MAX_ADMIN_USER_LENGTH:
+        raise SetupInputError(
+            f"The admin username must be at most {MAX_ADMIN_USER_LENGTH} characters."
+        )
+    if any(character.isspace() for character in user):
+        raise SetupInputError("The admin username cannot contain spaces.")
+
+    if password != confirm:
+        raise SetupInputError("The two passwords do not match.")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise SetupInputError(
+            f"The admin password must be at least {MIN_PASSWORD_LENGTH} characters. "
+            "This login controls your whole server, and nothing slows down repeated "
+            "guesses, so the password's length is the whole defence."
+        )
+    if "\n" in password or "\r" in password:
+        raise SetupInputError("The admin password cannot contain a line break.")
+    if algo not in HASH_ALGORITHMS:
+        raise SetupInputError(f"Unknown password algorithm {algo!r}.")
+
+    try:
+        password_hash = hash_password(password, algo=algo)
+    except PasswordTooLongError as exc:
+        # bcrypt's 72-byte limit, surfaced with its own explanation plus the caller's
+        # way out.
+        raise SetupInputError(f"{exc} {too_long_hint}") from exc
+    return user, password_hash
 
 
 def validated_settings(
@@ -339,6 +357,7 @@ def validated_modifiers(raw: Mapping[str, Any], *, current: str = "") -> str:
 
 
 __all__ = [
+    "admin_credentials",
     "MIN_PASSWORD_LENGTH",
     "MIN_SERVER_PASS_LENGTH",
     "PreparedSetup",
