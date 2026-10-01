@@ -582,6 +582,21 @@
     el.backupsError.hidden = !text;
   }
 
+  // "3 days ago", measured against the server's clock so it agrees with the header.
+  function formatAgo(epoch) {
+    var value = Number(epoch);
+    if (!isFinite(value) || value <= 0) { return "—"; }
+    if (clock.epoch === null) { return formatTaken(value); }
+    var now = clock.epoch + (Date.now() - clock.takenAt) / 1000;
+    var seconds = Math.max(0, now - value);
+    if (seconds < 60) { return "just now"; }
+    if (seconds < 3600) { return Math.floor(seconds / 60) + " min ago"; }
+    if (seconds < 86400) { return Math.floor(seconds / 3600) + " h ago"; }
+    var days = Math.floor(seconds / 86400);
+    if (days < 30) { return days === 1 ? "yesterday" : days + " days ago"; }
+    return formatTaken(value);
+  }
+
   function formatTaken(epoch) {
     var value = Number(epoch);
     if (!isFinite(value) || value <= 0) { return "—"; }
@@ -627,7 +642,9 @@
 
     var taken = document.createElement("td");
     taken.className = "backup-taken";
-    taken.textContent = formatTaken(backup.taken_at);
+    // How long ago, with the exact time (on the server's clock) on hover.
+    taken.textContent = formatAgo(backup.taken_at);
+    taken.title = formatTaken(backup.taken_at);
     row.appendChild(taken);
 
     var by = document.createElement("td");
@@ -650,6 +667,13 @@
       restore.setAttribute("data-backup-restore", backup.name);
       action.appendChild(restore);
     }
+    // A plain link: the browser does the download, and a session cookie rides along.
+    var download = document.createElement("a");
+    download.className = "button-link ghost small";
+    download.href = "/api/backups/download?name=" + encodeURIComponent(backup.name);
+    download.setAttribute("download", backup.name);
+    download.textContent = "Download";
+    action.appendChild(download);
     if (backup.deletable) {
       var remove = document.createElement("button");
       remove.className = "ghost danger-quiet";

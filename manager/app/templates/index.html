@@ -311,49 +311,47 @@
 </div>
 <div id="panel-worlds" class="tabpanel" role="tabpanel" aria-labelledby="tab-worlds"
      tabindex="0" hidden>
-  <section class="card worlds-card">
-    <h2>
-      Worlds
-      <button id="btn-worlds-refresh" class="ghost small">Refresh</button>
-    </h2>
-
-    {# Filled in by app.js with the same reason the settings panel gives, and only
-       while the server is not off. A live region: the reason arrives from a status
-       push, not from a page load. #}
-    <p id="worlds-locked" class="muted small" role="status" aria-live="polite" hidden></p>
-    <p id="worlds-error" class="banner banner-error" role="alert" hidden></p>
-
-    <p class="muted">
-      The worlds saved on your server. <strong>Load</strong> picks the one the server
-      opens next time you start it &mdash; the server has to be off first. Uploading
-      is how you move a world from your own PC onto the server, and it is the only way
-      to play a world with a <em>seed</em> you chose yourself.
-    </p>
-
-    {# Making a world is the switch with the collision check inverted: the manager
-       cannot generate a save, Valheim does that on the next Start. #}
-    <form id="world-new-form" class="world-new" autocomplete="off">
-      <label for="world-new-name">Make a new world</label>
-      <div class="controls">
-        {# The explanation is a bubble on focus rather than a paragraph under the
-           field: it is only needed while someone is actually typing a name. Kept in
-           the DOM and referenced by aria-describedby, so a screen reader reads it
-           when the field takes focus whether or not the bubble is drawn. #}
+  <section class="panel worlds-card">
+    <header class="panel-head">
+      <h2 class="section-tag">
+        Worlds
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="About worlds"
+                  aria-describedby="worlds-about">?</button>
+          <span class="hint-bubble" id="worlds-about" role="tooltip" hidden>
+            Load picks the world the server opens next time you start it; the server has
+            to be off first. Uploading is the only way to play a world with a seed you
+            chose yourself.
+          </span>
+        </span>
+      </h2>
+      {# A new world only needs its name; the hint explains what happens next, and
+         is referenced by aria-describedby so a screen reader reads it too. #}
+      <form id="world-new-form" class="inline-form" autocomplete="off">
         <span class="hint-anchor">
           <input id="world-new-name" name="name" type="text" spellcheck="false"
-                 aria-describedby="world-new-hint"
-                 placeholder="a name you have not used yet">
+                 aria-label="New world name" aria-describedby="world-new-hint"
+                 placeholder="New world name">
           <span class="hint-bubble" id="world-new-hint" role="tooltip" hidden>
             Valheim builds it the next time you press <strong>Start</strong>, with a
             random seed it picks at that moment. Your current world stays where it is
             and you can switch back to it whenever you like.
           </span>
         </span>
-        <button type="submit" id="btn-world-new" class="ghost">Create</button>
+        <button type="submit" id="btn-world-new" class="ghost small">Create</button>
+      </form>
+      <div class="panel-tools">
+        <button id="btn-worlds-refresh" class="ghost small">Refresh</button>
       </div>
-    </form>
-
-    <table class="settings" id="worlds-table">
+    </header>
+    {# Filled in by app.js while the server is not off. A live region: the reason
+       arrives from a status push. #}
+    <p id="worlds-locked" class="notice notice-warn" role="status" aria-live="polite" hidden></p>
+    <p id="worlds-error" class="notice notice-error" role="alert" hidden></p>
+    <p class="muted notice-line">
+      Load picks the one the server opens next time you start it; the server has to be off first.
+    </p>
+    <table class="grid" id="worlds-table">
       <thead>
         <tr>
           <th scope="col">World</th>
@@ -364,100 +362,85 @@
       </thead>
       <tbody id="worlds-body"></tbody>
     </table>
-    <p id="worlds-empty" class="muted small" hidden>
-      No worlds yet. Press <strong>Start</strong> and Valheim makes one for you, or
-      upload one from your PC first.
+    <p id="worlds-empty" class="empty-line" hidden>
+      No worlds yet. Press <strong>Start</strong> and Valheim makes one for you, or upload one.
     </p>
 
-    <form id="world-upload-form" class="settings-form" autocomplete="off"
+    <form id="world-upload-form" class="upload" autocomplete="off"
           data-max-bytes="{{ max_upload_bytes }}" data-max-human="{{ max_upload_human }}"
           data-max-files="{{ max_upload_files }}">
-      {# In the tab order, with a keydown handler in app.js: Enter or Space opens the
-         folder picker, which is what dropping a folder on it amounts to. #}
-      <div id="world-dropzone" class="dropzone" tabindex="0" role="group"
+      <div id="world-dropzone" class="dropzone dropzone-compact" tabindex="0" role="group"
            aria-labelledby="world-dropzone-label">
-        <p id="world-dropzone-label"><strong>Drop a world here to upload it</strong></p>
-        <p class="muted small">
-          Drop the world's whole folder, or a <code>.zip</code> of it. Worlds from
-          before Valheim 1.0 are a <code>.db</code> and a <code>.fwl</code> file
-          &mdash; drop both together.
-        </p>
-        <p class="muted small">
-          Up to {{ max_upload_human }} and {{ max_upload_files }} files at a time. A
-          big explored world is a lot of small files, so zip it first if the count
-          looks close. Nothing is saved unless the whole world arrives in one piece,
-          and a world you already have is never written over.
-        </p>
+        <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0-4 4m4-4 4 4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <p id="world-dropzone-label"><strong>Drop a world folder or .zip</strong>
+          <span class="muted">to upload it</span></p>
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="Upload rules"
+                  aria-describedby="upload-hint">?</button>
+          <span class="hint-bubble hint-bubble-end" id="upload-hint" role="tooltip" hidden>
+            Drop the world's whole folder, or a .zip of it. A world from before Valheim 1.0
+            is a .db and a .fwl file: drop both together.
+            Up to {{ max_upload_human }} and {{ max_upload_files }} files at a time, so
+            zip a big world first. Nothing is saved unless the whole world arrives, and a
+            world you already have is never written over.
+          </span>
+        </span>
         <div class="controls">
-          <button type="button" id="btn-pick-folder" class="ghost small">Choose a folder…</button>
-          <button type="button" id="btn-pick-files" class="ghost small">Choose files…</button>
+          <button type="button" id="btn-pick-folder" class="ghost small">Folder…</button>
+          <button type="button" id="btn-pick-files" class="ghost small">Files…</button>
         </div>
-        {# Hidden, driven by the two buttons: a bare file input cannot say "or a whole
-           folder", and the drop zone is the primary route anyway. #}
         <input type="file" id="world-folder-input" webkitdirectory directory multiple hidden>
         <input type="file" id="world-file-input" multiple hidden>
       </div>
-
-      <p id="world-selection" class="muted small" role="status" aria-live="polite">
-        Nothing selected yet.
-      </p>
-
-      <label for="world-upload-name">Name on the server</label>
-      <input id="world-upload-name" name="name" type="text" spellcheck="false"
-             placeholder="taken from the folder or file name">
-      <p class="muted small">
-        Optional &mdash; the folder or file name is used if you leave this empty. Fill
-        it in to save the world under a different name. One name, no slashes.
-      </p>
-
-      <p class="muted small" id="world-legacy-warning" hidden>{{ legacy_warning }}</p>
-
+      <div class="upload-row">
+        <p id="world-selection" class="muted small" role="status" aria-live="polite">
+          Nothing selected yet.
+        </p>
+        <label for="world-upload-name" class="visually-hidden">Name on the server</label>
+        <input id="world-upload-name" name="name" type="text" spellcheck="false"
+               placeholder="Name on the server (optional)">
+        <button type="submit" id="btn-world-upload" class="primary small" disabled>Upload</button>
+        <button type="button" id="btn-world-reset" class="ghost small">Clear</button>
+      </div>
+      <p class="muted small notice-line" id="world-legacy-warning" hidden>{{ legacy_warning }}</p>
       <progress id="world-progress" max="100" value="0"
                 aria-label="World upload progress" hidden></progress>
-
-      <div class="controls">
-        <button type="submit" id="btn-world-upload" class="primary" disabled>Upload</button>
-        {# Doubles as the abort while an upload is in flight -- see app.js. #}
-        <button type="button" id="btn-world-reset" class="ghost">Clear</button>
-      </div>
     </form>
   </section>
 
-  {# Backups. A card of its own rather than more rows in the worlds table: the timer's
-     settings belong with the archives it writes, and the list mixes three different
-     writers (the Backup button, the timer, and the game server's own hourly ones)
-     that the table has to tell apart. #}
-  <section class="card backups-card">
-    <h2>
-      Backups
-      <button id="btn-backups-refresh" class="ghost small">Refresh</button>
-    </h2>
-
-    <p id="backups-error" class="banner banner-error" role="alert" hidden></p>
-
-    <p class="muted">
-      A backup is a <code>.zip</code> of one world, and taking one never touches the
-      world itself &mdash; you can do it while people are playing. Restoring writes a
-      world back out, so the server has to be off for that.
-    </p>
-
-    <form id="backup-schedule-form" class="settings-form backup-schedule" autocomplete="off">
-      <label class="check">
+  {# Backups sit with the worlds they copy. The list mixes three writers -- the
+     Back up button, the dashboard's timer, and the game server's own hourly ones. #}
+  <section class="panel backups-card">
+    <header class="panel-head">
+      <h2 class="section-tag">
+        Backups
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="About backups"
+                  aria-describedby="backups-about">?</button>
+          <span class="hint-bubble" id="backups-about" role="tooltip" hidden>
+            A backup is a .zip of one world, and taking one never touches the world, even
+            while people are playing. Restoring writes a world back, so the server has
+            to be off for that.
+          </span>
+        </span>
+      </h2>
+      <div class="panel-tools">
+        <button id="btn-backups-refresh" class="ghost small">Refresh</button>
+      </div>
+    </header>
+    <p id="backups-error" class="notice notice-error" role="alert" hidden></p>
+    <form id="backup-schedule-form" class="schedule-bar" autocomplete="off">
+      <label class="switch">
         <input type="checkbox" id="backup-enabled" checked>
-        Back up the loaded world automatically
+        <span class="switch-track" aria-hidden="true"></span>
+        Automatic
       </label>
-      <p class="muted small">
-        The game server keeps its own hourly backups and deletes them after a few
-        days. These are the dashboard's: they are kept for as long as you say, and
-        nothing else ever removes them.
-      </p>
-
-      <fieldset class="modifiers backup-interval" id="backup-interval-fields">
-        <legend>How often</legend>
+      <fieldset class="schedule-fields" id="backup-interval-fields">
+        <legend class="visually-hidden">How often</legend>
         <label class="radio">
           <input type="radio" name="backup-interval-mode" id="backup-every-day"
                  value="default" checked>
-          Every {{ backup_limits.default_interval_hours }} hours
+          Every {{ backup_limits.default_interval_hours }} h
         </label>
         <label class="radio">
           <input type="radio" name="backup-interval-mode" id="backup-every-custom"
@@ -468,41 +451,39 @@
                  max="{{ backup_limits.max_interval_hours }}"
                  value="{{ backup_limits.default_interval_hours }}"
                  aria-label="Hours between backups">
-          hours
+          h
         </label>
         <label class="radio">
           <input type="radio" name="backup-interval-mode" id="backup-every-at"
                  value="at">
-          Every day at
+          Daily at
           <input type="time" id="backup-daily-time"
                  value="{{ backup_limits.default_daily_time }}"
                  aria-label="Time of day to back up">
         </label>
-        <p class="muted small">
-          Anything from {{ backup_limits.min_interval_hours }} hour to
-          {{ backup_limits.max_interval_hours }} hours, or a time on your server's
-          own clock.
-        </p>
-
-        <label for="backup-keep">Backups to keep, per world</label>
-        <input type="number" id="backup-keep"
-               min="{{ backup_limits.min_keep }}" max="{{ backup_limits.max_keep }}"
-               value="{{ backup_limits.default_keep }}">
-        <p class="muted small">
-          Once there are more than this, the oldest <em>automatic</em> backup of that
-          world is deleted to make room. A backup you took yourself with
-          <strong>Back up</strong> is never removed on a timer.
-        </p>
+        <label class="keep">
+          Keep
+          <input type="number" id="backup-keep"
+                 min="{{ backup_limits.min_keep }}" max="{{ backup_limits.max_keep }}"
+                 value="{{ backup_limits.default_keep }}"
+                 aria-label="Backups to keep, per world">
+          per world
+        </label>
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="About the schedule"
+                  aria-describedby="schedule-hint">?</button>
+          <span class="hint-bubble hint-bubble-end" id="schedule-hint" role="tooltip" hidden>
+            {{ backup_limits.min_interval_hours }} to {{ backup_limits.max_interval_hours }} hours,
+            or a time on your server's own clock. Past the limit, the oldest automatic
+            backup of that world is deleted; one you took yourself is never removed on a
+            timer.
+          </span>
+        </span>
       </fieldset>
-
-      <p id="backup-schedule-note" class="muted small" role="status" aria-live="polite"></p>
-
-      <div class="controls">
-        <button type="submit" id="btn-backup-schedule-save" class="primary">Save</button>
-      </div>
+      <button type="submit" id="btn-backup-schedule-save" class="primary small">Save</button>
+      <p id="backup-schedule-note" class="muted small schedule-note" role="status" aria-live="polite"></p>
     </form>
-
-    <table class="settings" id="backups-table">
+    <table class="grid" id="backups-table">
       <thead>
         <tr>
           <th scope="col">World</th>
@@ -514,12 +495,11 @@
       </thead>
       <tbody id="backups-body"></tbody>
     </table>
-    <p id="backups-empty" class="muted small" hidden>
-      No backups yet. Press <strong>Back up</strong> on a world above, or leave
-      automatic backups on and the first one arrives shortly.
+    <p id="backups-empty" class="empty-line" hidden>
+      No backups yet. Press <strong>Back up</strong> on a world, or leave automatic
+      backups on.
     </p>
   </section>
-
   {# Deleting is the one action here that destroys data, so it asks first -- and the
      question names the world and what it is about to remove rather than asking
      "are you sure?" about nothing in particular. #}

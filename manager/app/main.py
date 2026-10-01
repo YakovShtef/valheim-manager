@@ -49,7 +49,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Form, Request, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -1996,6 +2002,18 @@ def create_app(
     async def api_backups(request: Request) -> JSONResponse:
         require_session(request)
         return await run_in_threadpool(_list_backups)
+
+    @app.get("/api/backups/download")
+    async def api_backup_download(request: Request) -> Response:
+        """One backup, sent to the browser as a file to keep or to hand to someone."""
+        require_session(request)
+        name = request.query_params.get("name", "")
+        try:
+            entry, path = await run_in_threadpool(backup_store.download_target, name)
+        except BackupError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        media = "application/zip" if entry.name.lower().endswith(".zip") else "application/octet-stream"
+        return FileResponse(path, media_type=media, filename=entry.name)
 
     @app.post("/api/backups/delete")
     async def api_backup_delete(request: Request) -> JSONResponse:

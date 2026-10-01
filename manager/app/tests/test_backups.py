@@ -665,3 +665,51 @@ def test_deleting_a_game_archive_over_the_api(backups_client, world_store):
 
     assert response.status_code == 200, response.text
     assert not path.exists()
+
+
+# ------------------------------------------------------------------ download
+#
+# Getting a backup off the server: a copy for safekeeping, or a world to hand to a
+# friend. Read-only, so it is a GET; it still needs a session, and it refuses
+# anything that is not a file directly inside the backups folder.
+
+
+def test_a_backup_downloads_as_an_attachment(backups_client, world_store):
+    path = world_store.backups_dir / "worlds-20260916-1041.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("worlds_local/Kakui/_main.1.db2", b"x")
+
+    response = backups_client.get("/api/backups/download", params={"name": path.name})
+
+    assert response.status_code == 200
+    assert response.content == path.read_bytes()
+    assert "attachment" in response.headers["content-disposition"]
+    assert path.name in response.headers["content-disposition"]
+
+
+def test_downloading_an_unknown_backup_is_a_404(backups_client):
+    response = backups_client.get("/api/backups/download", params={"name": "nope.zip"})
+    assert response.status_code == 404
+    assert "no backup" in response.json()["error"].lower()
+
+
+def test_downloading_outside_the_backups_folder_is_refused(backups_client, world_store):
+    (world_store.backups_dir.parent / "secret.zip").write_bytes(b"x")
+    response = backups_client.get(
+        "/api/backups/download", params={"name": "../secret.zip"}
+    )
+    assert response.status_code in (400, 404)
+    assert response.content != b"x"
+
+
+def test_downloading_needs_a_session(volume, env_file, fake_docker):
+    config = build_config(
+        env_file,
+        worlds_dir=str(volume / "worlds_local"),
+        backups_dir=str(volume / "backups"),
+    )
+    app = create_app(config=config, controller=build_control(config, fake_docker),
+                     settings=SettingsStore(env_file))
+    with TestClient(app) as client:
+        response = client.get("/api/backups/download", params={"name": "x.zip"})
+    assert response.status_code == 401

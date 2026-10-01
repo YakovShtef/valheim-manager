@@ -1030,3 +1030,51 @@ dialog h2 { text-transform: none; letter-spacing: -.005em; font-size: 15px; colo
 .console .sys .m { color: var(--ink-faint); font-style: italic; }
 /* Solid, not frosted: the strip is a toolbar, not a pane of glass. */
 .tabs { background: var(--bg); backdrop-filter: none; }
+
+/* ------------------------------------------------------- worlds & backups */
+.inline-form { display: flex; align-items: center; gap: 6px; }
+.inline-form input[type="text"] { padding: 5px 10px; font-size: 12.5px; width: 200px; }
+.worlds-card .grid td:nth-child(3), .backups-card .grid td:nth-child(4) { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); white-space: nowrap; }
+.backups-card .backup-taken { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); white-space: nowrap; cursor: help; }
+.backups-card .backup-world { font-weight: 600; }
+.grid .backup-action, .grid td:last-child { text-align: right; white-space: nowrap; }
+.grid td:last-child > * + * { margin-left: 6px; }
+.grid td:last-child button { padding: 4px 10px; font-size: 12px; }
+
+/* A download is a link that looks like the buttons beside it. */
+.button-link {
+  display: inline-block; font-size: 12px; font-weight: 550; text-decoration: none;
+  padding: 4px 10px; border-radius: var(--r-control); border: 1px solid var(--line);
+  color: var(--ink); transition: background-color var(--ease), border-color var(--ease);
+}
+.button-link:hover { background: var(--surface-2); border-color: var(--line-strong); }
+.button-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The drop target: a dashed strip, not a hollow box. */
+.upload { padding: var(--s3) var(--s4) var(--s4); border-top: 1px solid var(--line); display: grid; gap: var(--s2); }
+.dropzone.dropzone-compact {
+  display: flex; align-items: center; gap: var(--s3); padding: 10px var(--s4);
+  border: 1px dashed var(--line-strong); border-radius: var(--r-container);
+  background: transparent; min-height: 0;
+}
+.dropzone-compact p { margin: 0; font-size: 13px; }
+.dropzone-compact .controls { margin: 0 0 0 auto; }
+.dropzone-compact .controls button.small { margin-left: 0; }
+.drop-icon { width: 20px; height: 20px; color: var(--ink-faint); flex: none; }
+.upload-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.upload-row p { margin: 0; flex: 1 1 200px; }
+.upload-row input[type="text"] { flex: 0 1 240px; padding: 5px 10px; font-size: 12.5px; }
+.upload-row button.small { margin-left: 0; }
+
+/* The schedule as one toolbar row. */
+.schedule-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4);
+  padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.schedule-fields { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); border: none; padding: 0; margin: 0; min-width: 0; }
+.schedule-fields label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-dim); }
+.schedule-fields input[type="number"] { width: 64px; padding: 4px 8px; font-size: 12.5px; font-family: var(--mono); }
+.schedule-fields input[type="time"] { padding: 3px 8px; font-size: 12.5px; font-family: var(--mono); }
+.schedule-bar button.small { margin-left: auto; }
+.schedule-note { flex-basis: 100%; margin: 0; }
+.schedule-note:empty { display: none; }

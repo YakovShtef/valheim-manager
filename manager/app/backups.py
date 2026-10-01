@@ -634,6 +634,20 @@ class BackupStore:
             raise BackupError(str(exc)) from exc
         return candidate
 
+    def download_target(self, name: str) -> tuple[BackupEntry, Path]:
+        """The listed backup called ``name`` and its path, for sending to a browser.
+
+        Only something the list itself would show: a regular file directly inside the
+        backups folder, never a link and never a path that leaves the folder.
+        """
+        entry = self.find(name)
+        if entry is None:
+            raise BackupError(f"There is no backup called {name!r} any more. Refresh the list.")
+        target = self._resolved(entry.name)
+        if target.is_symlink() or not target.is_file():
+            raise BackupError(f"{entry.name} is not a file the dashboard will send.")
+        return entry, target
+
     def _resolved(self, name: str) -> Path:
         """``name`` inside the backups folder, refusing anything that escapes it."""
         root = self.root.resolve()
