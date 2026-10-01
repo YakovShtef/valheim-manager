@@ -2,10 +2,13 @@
 {% block title %}Valheim Server Manager{% endblock %}
 {% block content %}
 <header class="topbar">
-  <h1>Valheim Server Manager</h1>
+  <h1 class="brand">
+    <img src="/static/icon.png" alt="" width="22" height="22">
+    Valheim <span class="brand-sub">Server Manager</span>
+  </h1>
   <form method="post" action="/logout" class="inline">
-    <span class="muted">{{ admin_user }}</span>
-    <button type="submit" class="ghost">Sign out</button>
+    <span class="topbar-user">{{ admin_user }}</span>
+    <button type="submit" class="ghost small">Sign out</button>
   </form>
 </header>
 
@@ -41,9 +44,11 @@
       Players <span class="tab-note" data-tab-note hidden></span>
     </button>
   </div>
+  {# ONE status: the server's phase while the dashboard is connected, and the
+     connection itself when it is not -- a stale "ready" beside a red "disconnected"
+     was two badges arguing about the same question. #}
   <p class="status-line">
-    <span id="status-badge" class="badge badge-unknown">connecting…</span>
-    <span id="link-badge" class="badge badge-unknown" title="WebSocket connection">live</span>
+    <span id="status-badge" class="badge badge-busy" role="status">connecting…</span>
   </p>
   {# The server's clock, not the browser's -- see server_clock() in main.py. The
      anchor is rendered into the data- attributes so the time is right on first

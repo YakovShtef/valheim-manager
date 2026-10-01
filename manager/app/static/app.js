@@ -25,7 +25,6 @@
   var el = {
     tablist: document.querySelector("[role='tablist']"),
     badge: document.getElementById("status-badge"),
-    link: document.getElementById("link-badge"),
     clock: document.getElementById("server-clock"),
     clockTime: document.getElementById("clock-time"),
     clockDate: document.getElementById("clock-date"),
@@ -366,8 +365,24 @@
   // tell the operator their click failed -- it is cleared by the next click instead.
   var bannerSource = null;
 
-  function showError(text, source) {
-    el.banner.textContent = text;
+  // The headline in words; any technical detail (a Docker exception, a traceback
+  // fragment) folded away under Details rather than shouted across the page.
+  function showError(text, source, detail) {
+    el.banner.textContent = "";
+    var headline = document.createElement("span");
+    headline.textContent = text;
+    el.banner.appendChild(headline);
+    if (detail) {
+      var more = document.createElement("details");
+      more.className = "banner-detail";
+      var summary = document.createElement("summary");
+      summary.textContent = "Details";
+      var pre = document.createElement("pre");
+      pre.textContent = detail;
+      more.appendChild(summary);
+      more.appendChild(pre);
+      el.banner.appendChild(more);
+    }
     el.banner.className = "banner banner-error";
     el.banner.hidden = false;
     bannerSource = source || "action";
@@ -886,9 +901,7 @@
 
   function renderStatus(status) {
     lastStatus = status;
-    var phase = PHASES[status.phase] || PHASES.error;
-    el.badge.textContent = phase.label;
-    el.badge.className = "badge " + phase.cls;
+    paintBadge();
     el.message.textContent = status.message || "";
     el.state.textContent = status.container_state || (status.container_exists ? "?" : "no container");
     el.started.textContent = status.started_at && status.started_at.indexOf("0001-01-01") !== 0
@@ -910,7 +923,7 @@
     }
 
     if (status.error) {
-      showError(status.error + (status.docker_error ? " — " + status.docker_error : ""), "status");
+      showError(status.error, "status", status.docker_error || "");
     } else {
       clearErrorFrom("status");
     }
@@ -2794,15 +2807,28 @@
     return scheme + "//" + window.location.host + "/ws/logs";
   }
 
+  var linkState = "connecting";
+
   function setLink(state) {
-    var map = {
-      live: ["live", "badge-ready"],
-      connecting: ["connecting…", "badge-busy"],
-      down: ["disconnected", "badge-error"]
-    };
-    var entry = map[state] || map.down;
-    el.link.textContent = entry[0];
-    el.link.className = "badge " + entry[1];
+    linkState = state;
+    paintBadge();
+  }
+
+  // The one status badge. Without a live connection the server's phase is unknown,
+  // so the badge says that instead of repeating the last phase it heard.
+  function paintBadge() {
+    if (!el.badge) { return; }
+    if (linkState !== "live" || !lastStatus) {
+      var down = linkState === "down";
+      el.badge.textContent = down ? "disconnected" : "connecting…";
+      el.badge.className = "badge " + (down ? "badge-error" : "badge-busy");
+      el.badge.title = down ? "Lost contact with the manager; retrying." : "";
+      return;
+    }
+    var phase = PHASES[lastStatus.phase] || PHASES.error;
+    el.badge.textContent = phase.label;
+    el.badge.className = "badge " + phase.cls;
+    el.badge.title = lastStatus.message || "";
   }
 
   function connect() {
