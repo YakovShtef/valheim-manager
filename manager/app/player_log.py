@@ -101,16 +101,20 @@ class SessionTracker:
     def __init__(self) -> None:
         # platform id -> the name we have for them this session, or None.
         self.connected: dict[str, str | None] = {}
+        # platform id -> when this session began, for "online for 20 minutes".
+        self.joined_at: dict[str, float] = {}
         self._platforms: dict[str, str] = {}
 
     def apply(self, event: PlayerEvent) -> PlayerUpdate | None:
         if isinstance(event, JoinEvent):
             self.connected[event.platform_id] = None
+            self.joined_at[event.platform_id] = event.epoch
             self._platforms[event.platform_id] = event.platform
             return PlayerUpdate(event.platform_id, event.platform, event.epoch, None)
 
         if isinstance(event, LeaveEvent):
             self.connected.pop(event.platform_id, None)
+            self.joined_at.pop(event.platform_id, None)
             # Still a sighting: backfill can begin mid-session, so a leave may be the
             # first and only thing the log tells us about this player.
             return PlayerUpdate(event.platform_id, event.platform, event.epoch, None)

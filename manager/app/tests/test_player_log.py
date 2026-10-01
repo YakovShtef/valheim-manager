@@ -144,3 +144,16 @@ def test_leave_for_an_unknown_id_still_counts_as_a_sighting():
     assert tracker.apply(leave(A)) == PlayerUpdate(
         platform_id=A, platform="steam", epoch=200.0, name=None
     )
+
+
+def test_a_join_records_when_the_session_began():
+    tracker = SessionTracker()
+    tracker.apply(join(A, epoch=100.0))
+    assert tracker.joined_at == {A: 100.0}
+
+
+def test_a_leave_forgets_when_the_session_began():
+    tracker = SessionTracker()
+    tracker.apply(join(A, epoch=100.0))
+    tracker.apply(leave(A, epoch=200.0))
+    assert tracker.joined_at == {}

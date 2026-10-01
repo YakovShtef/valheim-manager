@@ -129,6 +129,15 @@
     playersTable: document.getElementById("players-table"),
     playersBody: document.getElementById("players-body"),
     playersEmpty: document.getElementById("players-empty"),
+    onlineBody: document.getElementById("online-body"),
+    onlineTable: document.getElementById("online-table"),
+    onlineEmpty: document.getElementById("online-empty"),
+    onlineCount: document.getElementById("online-count"),
+    banDialog: document.getElementById("ban-dialog"),
+    banName: document.getElementById("ban-dialog-name"),
+    banDetail: document.getElementById("ban-dialog-detail"),
+    banConfirm: document.getElementById("btn-ban-confirm"),
+    banCancel: document.getElementById("btn-ban-cancel"),
     whitelistToggle: document.getElementById("whitelist-toggle"),
     whitelistNote: document.getElementById("whitelist-note"),
     permittedNote: document.getElementById("permitted-note"),
@@ -258,6 +267,8 @@
     // The roster moves on its own -- the watcher records every join and leave -- so a
     // "last seen" read when the tab was last open is stale by the time it is back.
     if (tabName(chosen) === "players" && playersLoaded && !playersBusy) { refreshPlayers(); }
+    // Who is online changes by the second, but only matters while it is on screen.
+    if (tabName(chosen) === "players") { startOnlinePoll(); } else { stopOnlinePoll(); }
     // A hidden console cannot scroll. Every scroll metric reads 0 on a display:none
     // box, so append()'s follow-scroll is a no-op for every line that arrives while
     // another tab is up, and the browser restores the OLD offset when the panel comes
@@ -2138,6 +2149,7 @@
     }
     el.playersTable.hidden = !lastPlayers.players.length;
     el.playersEmpty.hidden = !!lastPlayers.players.length;
+    renderOnline(lastPlayers.players);
 
     el.whitelistToggle.checked = lastPlayers.whitelistEnabled;
     el.whitelistNote.textContent = lastPlayers.whitelistEnabled
@@ -2299,6 +2311,147 @@
         return payload;
       });
     });
+  }
+
+  // ------------------------------------------------------------ online now
+
+  var ONLINE_POLL_MS = 5000;
+  var onlinePoll = null;
+  // The player the ban dialog is asking about, by file ID. Read on confirm and cleared
+  // by every way out, so a refresh underneath an open dialog cannot retarget it.
+  var pendingBan = null;
+
+  function startOnlinePoll() {
+    if (onlinePoll !== null) { return; }
+    onlinePoll = window.setInterval(function () {
+      // Never underneath a change in flight or an open question: the repaint would
+      // only race the answer.
+      var asking = pendingBan !== null || pendingWhitelist !== null;
+      if (!playersBusy && !asking) { refreshPlayers(); }
+    }, ONLINE_POLL_MS);
+  }
+
+  function stopOnlinePoll() {
+    if (onlinePoll === null) { return; }
+    window.clearInterval(onlinePoll);
+    onlinePoll = null;
+  }
+
+  // "for 23 min", on the server's clock so it agrees with the header. Empty until the
+  // clock has its first anchor, rather than a number measured on the browser's.
+  function onlineFor(since) {
+    if (clock.epoch === null || since === null || since === undefined) { return ""; }
+    var now = clock.epoch + (Date.now() - clock.takenAt) / 1000;
+    var minutes = Math.max(0, Math.floor((now - Number(since)) / 60));
+    if (minutes < 60) { return "for " + minutes + " min"; }
+    return "for " + Math.floor(minutes / 60) + " h " + (minutes % 60) + " min";
+  }
+
+  function renderOnline(players) {
+    if (!el.onlineBody) { return; }
+    var online = [];
+    for (var i = 0; i < players.length; i++) {
+      if (players[i].online) { online.push(players[i]); }
+    }
+    online.sort(function (a, b) { return (a.online_since || 0) - (b.online_since || 0); });
+    el.onlineBody.textContent = "";
+    for (var j = 0; j < online.length; j++) {
+      el.onlineBody.appendChild(onlineRow(online[j]));
+    }
+    el.onlineCount.textContent = String(online.length);
+    el.onlineTable.hidden = !online.length;
+    el.onlineEmpty.hidden = !!online.length;
+  }
+
+  function onlineRow(row) {
+    var tr = document.createElement("tr");
+    var who = document.createElement("td");
+    who.className = "player-name";
+    var title = document.createElement("div");
+    title.textContent = row.name || row.id;
+    who.appendChild(title);
+    if (row.name) {
+      var id = document.createElement("div");
+      id.className = "player-id muted";
+      id.textContent = row.id;
+      who.appendChild(id);
+    }
+    tr.appendChild(who);
+
+    var since = formatSeen(row.online_since);
+    var length = onlineFor(row.online_since);
+    tr.appendChild(textCell(length ? since + " · " + length : since, "player-seen"));
+
+    var actions = document.createElement("td");
+    actions.className = "online-actions";
+    actions.appendChild(onlineAction(row, "admin", "Make admin", "Admin", "data-online-admin"));
+    actions.appendChild(onlineAction(row, "banned", "Ban", "Banned", "data-online-ban"));
+    tr.appendChild(actions);
+    return tr;
+  }
+
+  // A button while the player is not on that list yet, a tag once they are. A player
+  // whose ID could not be worked out gets the button disabled, saying why: guessing
+  // an ID writes a line the game ignores while the page claims it worked.
+  function onlineAction(row, kind, label, done, attribute) {
+    if (row["is_" + kind]) {
+      var tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = done;
+      return tag;
+    }
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = kind === "banned" ? "ghost danger-quiet" : "ghost";
+    button.textContent = label;
+    button.setAttribute(attribute, row.file_id || "");
+    if (!row.file_id) {
+      button.disabled = true;
+      button.title = "Their ID could not be worked out from the server log. Add them " +
+        "by ID below, using the ID the game shows when they press F2.";
+    }
+    return button;
+  }
+
+  function onlinePlayer(fileId) {
+    if (!lastPlayers) { return null; }
+    for (var i = 0; i < lastPlayers.players.length; i++) {
+      if (lastPlayers.players[i].file_id === fileId) { return lastPlayers.players[i]; }
+    }
+    return null;
+  }
+
+  function askBan(fileId) {
+    var row = onlinePlayer(fileId);
+    if (!row || !row.file_id) { return; }
+    var label = row.name ? row.name + " (" + row.id + ")" : row.id;
+    pendingBan = row.file_id;
+    if (el.banDialog && typeof el.banDialog.showModal === "function") {
+      el.banName.textContent = label;
+      el.banDetail.textContent = "online since " + formatSeen(row.online_since);
+      el.banDialog.showModal();
+    } else if (window.confirm(
+        "Ban " + label + "? They will not be able to join again until you untick them " +
+        "under Banned. Whether a ban also removes someone who is playing right now has " +
+        "not been tested yet.")) {
+      // No <dialog> support: still ask, never ban straight off a click.
+      confirmBan();
+    } else {
+      pendingBan = null;
+    }
+  }
+
+  function confirmBan() {
+    var fileId = pendingBan;
+    closeBan();
+    if (fileId) {
+      sendPlayers("/api/players/list", { kind: "banned", file_id: fileId, member: true });
+    }
+  }
+
+  function closeBan() {
+    pendingBan = null;
+    if (el.banDialog && el.banDialog.close && el.banDialog.open) { el.banDialog.close(); }
   }
 
   function refreshPlayers() {
@@ -2498,6 +2651,22 @@
     el.whitelistCancel.addEventListener("click", closeWhitelist);
     // Esc closes a <dialog> on its own; make that forget the question too.
     el.whitelistDialog.addEventListener("close", function () { pendingWhitelist = null; });
+
+    el.onlineBody.addEventListener("click", function (event) {
+      var target = event.target.closest ? event.target : null;
+      if (!target || playersBusy) { return; }
+      var ban = target.closest("button[data-online-ban]");
+      if (ban && !ban.disabled) { askBan(ban.getAttribute("data-online-ban")); return; }
+      var admin = target.closest("button[data-online-admin]");
+      if (admin && !admin.disabled) {
+        sendPlayers("/api/players/list", {
+          kind: "admin", file_id: admin.getAttribute("data-online-admin"), member: true
+        });
+      }
+    });
+    el.banConfirm.addEventListener("click", confirmBan);
+    el.banCancel.addEventListener("click", closeBan);
+    el.banDialog.addEventListener("close", function () { pendingBan = null; });
 
     el.playerAddForm.addEventListener("submit", function (event) {
       event.preventDefault();

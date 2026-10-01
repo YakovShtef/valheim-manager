@@ -223,6 +223,23 @@ new one, so if the server has been off for a while, old ones stay until you dele
 If the zip can't be finished for any reason, nothing is left behind that looks like a
 backup — the archive is built under a temporary name and only renamed once complete.
 
+### The Players tab
+
+**Online now** at the top shows who is on the server at this moment and how long
+they've been on. It refreshes every few seconds while the tab is open. From there you
+can **Make admin** or **Ban** a player. Ban asks first, and stops them joining again;
+whether it also removes someone who is already playing hasn't been tested yet.
+
+Below it is everyone who has ever joined, plus anyone already named in the game's
+admin, banned or permitted lists, with a tick box for each list. A change is written to
+the game's own list file straight away. The permitted list is a whitelist: while it's
+switched off, ticking someone only prepares the list, and nobody is shut out until you
+turn it on with its own switch, which asks first.
+
+Kicking a player, giving them items or teleporting them can't be done from the
+dashboard. The game server has no way to take those commands from outside the game:
+an admin types them in the F5 console while playing.
+
 ### Deleting a world
 
 Press **Delete** on any world and you'll get a confirmation naming the world and its

@@ -599,6 +599,52 @@
    the two views are always painted from the same read and cannot disagree. #}
 <div id="panel-players" class="tabpanel" role="tabpanel" aria-labelledby="tab-players"
      tabindex="0" hidden>
+  {# Who is on the server right now, from the same log the roster is built from and
+     scoped to the current run of the game server. Refreshed every few seconds while
+     this tab is open. Only what the server can actually do is offered: the lists. #}
+  <section class="card online-card" aria-labelledby="online-title">
+    <h2 id="online-title">
+      Online now <span id="online-count" class="tag">0</span>
+    </h2>
+    <p id="online-empty" class="muted small">Nobody is on the server right now.</p>
+    <table class="settings" id="online-table" hidden>
+      <thead>
+        <tr>
+          <th scope="col">Player</th>
+          <th scope="col">Online since</th>
+          <th scope="col"><span class="visually-hidden">What you can do</span></th>
+        </tr>
+      </thead>
+      <tbody id="online-body"></tbody>
+    </table>
+    <p id="online-limits" class="muted small">
+      Kicking someone, giving them items or teleporting them can only be done from
+      inside the game, by an admin using the F5 console. The game server has no way to
+      take those commands from this page.
+    </p>
+  </section>
+
+  {# Banning someone who is playing: the one destructive action in the online list,
+     so it asks first and says honestly what a ban is known to do. #}
+  <dialog id="ban-dialog" class="confirm" aria-labelledby="ban-dialog-title">
+    <h2 id="ban-dialog-title">Ban this player?</h2>
+    <p class="confirm-subject">
+      <strong id="ban-dialog-name"></strong>
+      <span id="ban-dialog-detail" class="muted small"></span>
+    </p>
+    <p class="banner banner-error">
+      They will not be able to join again until you untick them under Banned.
+    </p>
+    <p class="muted small">
+      Whether a ban also removes someone who is playing right now has not been tested on
+      this server yet, so they may stay on until they leave.
+    </p>
+    <div class="controls">
+      <button type="button" id="btn-ban-cancel" class="ghost" autofocus>Cancel</button>
+      <button type="button" id="btn-ban-confirm" class="danger">Ban</button>
+    </div>
+  </dialog>
+
   <section class="card players-card">
     <h2>
       Players

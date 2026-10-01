@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -146,7 +147,9 @@ class PlayerStore:
             log.warning("Could not write the roster at %s: %s", self.path, exc)
 
 
-WATCH_INTERVAL_SECONDS = 15
+# Short enough that the Players tab's "online now" list keeps up with joins and
+# leaves; each tick is one `since`-bounded log read, so it costs next to nothing.
+WATCH_INTERVAL_SECONDS = 5
 
 
 def harvest_players(
@@ -192,4 +195,69 @@ def harvest_players(
     return newest
 
 
-__all__ = ["PLAYERS_MODE", "Player", "PlayerStore", "WATCH_INTERVAL_SECONDS", "harvest_players"]
+
+class LivePlayers:
+    """Who is connected right now, for the CURRENT run of the game container.
+
+    The roster remembers everyone; this answers a narrower question. It is fed by the
+    same log, but scoped to one run: a run ends when the server stops or its container
+    is replaced, and a run that ended badly -- a crash, a kill -- never logs the
+    leaves. So the session tracker is thrown away at every run boundary rather than
+    trusted to drain, and nobody is online while the server is not running.
+
+    The first tick still backfills the roster from the whole log, earlier runs
+    included, exactly as the watcher always has; only presence is run-scoped.
+
+    ``tick`` runs on a worker thread and ``online`` is read from request threads, so
+    both take the lock.
+    """
+
+    def __init__(self, control, store: PlayerStore):
+        self.control = control
+        self.store = store
+        self._tracker = SessionTracker()
+        self._since = 0.0
+        self._run_key: tuple[str, str] | None = None
+        self._running = False
+        self._backfilled = False
+        self._lock = threading.Lock()
+
+    def tick(self, *, world: str | None) -> None:
+        """One poll. Never raises: it runs in the app's always-on background task."""
+        try:
+            run = self.control.current_run()
+        except Exception as exc:  # noqa: BLE001 - an outage must not kill the watcher
+            log.warning("Could not read the game container's state: %s", exc)
+            with self._lock:
+                self._running = False
+            return
+        with self._lock:
+            key = run.key if run is not None else None
+            if key != self._run_key:
+                if not self._backfilled:
+                    harvest_players(
+                        self.control, SessionTracker(), self.store, since=0.0, world=world
+                    )
+                    self._backfilled = True
+                self._tracker = SessionTracker()
+                if run is not None and run.started_at > 0:
+                    self._since = run.started_at
+                self._run_key = key
+            self._running = bool(run is not None and run.running)
+            self._since = harvest_players(
+                self.control, self._tracker, self.store, since=self._since, world=world
+            )
+
+    def online(self) -> dict[str, float]:
+        """Platform id -> when their session began. Empty while the server is down."""
+        with self._lock:
+            return dict(self._tracker.joined_at) if self._running else {}
+
+__all__ = [
+    "LivePlayers",
+    "PLAYERS_MODE",
+    "Player",
+    "PlayerStore",
+    "WATCH_INTERVAL_SECONDS",
+    "harvest_players",
+]

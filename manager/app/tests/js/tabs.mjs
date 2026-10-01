@@ -912,11 +912,21 @@ check("the_permitted_editor_keeps_parked_players_as_disabled_lines", async () =>
 });
 
 check("nothing_on_the_page_offers_a_kick", async () => {
-  // Vanilla Valheim has no channel for the manager to send one. Nothing may suggest
-  // otherwise -- not a button, not a disabled placeholder, not a word of copy.
-  const p = await playersPage(null);
+  // Vanilla Valheim has no channel for the manager to send one. Nothing may offer one
+  // -- not a button, not a disabled placeholder, not an attribute. The word may appear
+  // only in the one note that says it is NOT available here, and why.
+  const p = await playersPage(PLAYERS());
   p.tab("players").click();
-  eq(/kick/i.test(p.doc.documentElement.textContent), false, "the page's text mentions a kick");
+  const note = p.doc.getElementById("online-limits");
+  eq(!!note, true, "there is no note explaining what cannot be done from here");
+  const outside = p.doc.documentElement.cloneNode(true);
+  const copy = outside.querySelector("#online-limits");
+  if (copy) { copy.remove(); }
+  eq(/kick/i.test(outside.textContent), false, "text outside the limits note mentions a kick");
+  for (const node of p.doc.querySelectorAll("button, input, a, select, option, label")) {
+    eq(/kick/i.test(node.textContent || ""), false,
+       `a <${node.tagName.toLowerCase()}> offers a kick`);
+  }
   for (const node of p.doc.querySelectorAll("*")) {
     for (const attr of node.attributes) {
       if (/kick/i.test(attr.value)) {
@@ -924,6 +934,88 @@ check("nothing_on_the_page_offers_a_kick", async () => {
       }
     }
   }
+});
+
+// ---------------------------------------------------------------- online now
+
+const ONLINE = (over = {}) => PLAYERS({
+  players: [
+    { id: RAGNAR, platform_id: "76561198012345678", file_id: RAGNAR, name: "Ragnar",
+      first_seen: 1699990000, last_seen: 1700000040, last_world: "Dedicated", seen: true,
+      is_admin: false, is_banned: false, is_permitted: false,
+      online: true, online_since: 1700000000 },
+    { id: "V_1111", platform_id: null, file_id: "V_1111", name: null,
+      first_seen: null, last_seen: null, last_world: null, seen: false,
+      is_admin: false, is_banned: true, is_permitted: false,
+      online: false, online_since: null },
+  ],
+  ...over,
+});
+const onlineRows = (p) => [...p.doc.querySelectorAll("#online-body tr")];
+
+check("online_players_are_listed_with_what_can_be_done", async () => {
+  const p = await playersPage(ONLINE());
+  p.tab("players").click();
+  const listed = onlineRows(p);
+  eq(listed.length, 1, "the online list");
+  eq(listed[0].textContent.indexOf("Ragnar") !== -1, true, "the online row's name");
+  eq(p.doc.getElementById("online-count").textContent, "1", "the count");
+  eq(p.doc.getElementById("online-empty").hidden, true, "the empty note is showing");
+  eq(!!listed[0].querySelector("button[data-online-ban]"), true, "no Ban button");
+  eq(!!listed[0].querySelector("button[data-online-admin]"), true, "no Make admin button");
+});
+
+check("nobody_online_says_so", async () => {
+  const p = await playersPage(PLAYERS());
+  p.tab("players").click();
+  eq(onlineRows(p).length, 0, "rows in the online list");
+  eq(p.doc.getElementById("online-empty").hidden, false, "the empty note");
+  eq(p.doc.getElementById("online-count").textContent, "0", "the count");
+});
+
+check("banning_an_online_player_asks_first", async () => {
+  const p = await playersPage(ONLINE());
+  p.tab("players").click();
+  eq(typeof p.doc.getElementById("ban-dialog").showModal, "undefined",
+     "precondition: this environment has no <dialog>, so the fallback is under test");
+  const asked = [];
+  p.win.confirm = (text) => { asked.push(text); return false; };
+  const before = p.posts.length;
+  onlineRows(p)[0].querySelector("button[data-online-ban]").click();
+  await p.settle();
+  eq(asked.length, 1, "Ban did not ask anything");
+  eq(asked[0].indexOf("Ragnar") !== -1, true, "the question does not name the player: " + asked[0]);
+  eq(p.posts.slice(before), [], "saying no still banned them");
+
+  p.win.confirm = () => true;
+  onlineRows(p)[0].querySelector("button[data-online-ban]").click();
+  await p.settle();
+  eq(p.posts.slice(before),
+     [{ path: "/api/players/list", body: { kind: "banned", file_id: RAGNAR, member: true } }],
+     "confirming did not send exactly one ban");
+});
+
+check("making_an_online_player_admin_posts_the_list_change", async () => {
+  const p = await playersPage(ONLINE());
+  p.tab("players").click();
+  const before = p.posts.length;
+  onlineRows(p)[0].querySelector("button[data-online-admin]").click();
+  await p.settle();
+  eq(p.posts.slice(before),
+     [{ path: "/api/players/list", body: { kind: "admin", file_id: RAGNAR, member: true } }],
+     "Make admin did not send exactly one change");
+});
+
+check("the_ban_dialog_is_wired_for_browsers_that_have_it", async () => {
+  const p = makePage();
+  const dialog = p.doc.getElementById("ban-dialog");
+  eq(!!dialog, true, "there is no ban dialog in the page");
+  eq(dialog.hasAttribute("open"), false, "the dialog ships open");
+  const cancel = p.doc.getElementById("btn-ban-cancel");
+  const confirm = p.doc.getElementById("btn-ban-confirm");
+  eq(!!cancel && !!confirm, true, "the dialog is missing a button");
+  eq(cancel.hasAttribute("autofocus"), true, "Cancel is not what focus lands on");
+  eq(confirm.className.indexOf("danger") !== -1, true, "Ban is not marked as destructive");
 });
 
 check("a_row_without_a_usable_id_cannot_be_ticked_and_says_why", async () => {

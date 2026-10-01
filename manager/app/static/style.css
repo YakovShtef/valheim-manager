@@ -708,3 +708,8 @@ dialog.confirm .controls { margin-top: var(--s5); justify-content: flex-end; }
   .players-card .settings { display: block; overflow-x: auto; }
   .player-add input { min-width: 0; }
 }
+
+/* ------------------------------------------------------------- online now */
+.online-card h2 .tag { font-family: var(--mono); }
+.online-card .online-actions { text-align: right; white-space: nowrap; }
+.online-card .online-actions > * + * { margin-left: 8px; }

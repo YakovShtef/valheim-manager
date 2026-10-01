@@ -72,8 +72,7 @@ from .permission_lists import (
     parse_list_text,
     to_file_id,
 )
-from .player_log import SessionTracker
-from .players import WATCH_INTERVAL_SECONDS, PlayerStore, harvest_players
+from .players import WATCH_INTERVAL_SECONDS, LivePlayers, PlayerStore
 from .modifiers import (
     CATEGORIES as MODIFIER_CATEGORIES,
     FIELD_KEYS as MODIFIER_FIELD_KEYS,
@@ -658,6 +657,8 @@ def create_app(
     app.state.auth = auth
     app.state.setup = setup
     app.state.control = control
+    # Set by the player watcher once it starts; None means nobody can be shown online.
+    app.state.live_players = None
     app.state.settings = store
     app.state.state_store = states
     app.state.worlds = world_store
@@ -1808,10 +1809,15 @@ def create_app(
                         "seen": False,
                     },
                 )
+        # Presence is keyed by the RAW logged id, which file-only rows do not have.
+        live = getattr(app.state, "live_players", None)
+        online = live.online() if live is not None else {}
         for file_id, row in rows.items():
             row["is_admin"] = file_id in members[ADMIN]
             row["is_banned"] = file_id in members[BANNED]
             row["is_permitted"] = file_id in members[PERMITTED]
+            row["online_since"] = online.get(row["platform_id"]) if row["platform_id"] else None
+            row["online"] = row["online_since"] is not None
 
         return {
             "players": sorted(
@@ -2410,14 +2416,11 @@ def create_app(
         before a `docker rm` -- removing a container destroys its log, and no design
         recovers that.
         """
-        player_store = PlayerStore(config.players_file)
-        tracker = SessionTracker()
-        since = 0.0
+        live = LivePlayers(control, PlayerStore(config.players_file))
+        app.state.live_players = live
         while True:
             world = _loaded_world() or None
-            since = await asyncio.to_thread(
-                harvest_players, control, tracker, player_store, since=since, world=world
-            )
+            await asyncio.to_thread(live.tick, world=world)
             await asyncio.sleep(WATCH_INTERVAL_SECONDS)
 
     # Both background tasks share one startup/shutdown pair rather than each getting

@@ -95,6 +95,19 @@ class DockerControlError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class GameRun:
+    """One run of the game container: from one Start to the next Stop or crash.
+
+    ``key`` is the same (container id, StartedAt) pair the readiness scan uses, so a
+    restart, or a container replaced by a settings save, is a different run.
+    """
+
+    key: tuple[str, str]
+    started_at: float
+    running: bool
+
+
+@dataclass(frozen=True)
 class LogLine:
     """One log record. ``raw`` includes the engine timestamp so it dedupes cleanly."""
 
@@ -298,6 +311,22 @@ class DockerControl:
             if self._action is not None and not self._action.alive():
                 self._action = None
             return self._action
+
+    def current_run(self) -> GameRun | None:
+        """The game container's current run, or ``None`` when there is no container.
+
+        Raises ``DockerControlError`` like ``get_container`` when the proxy cannot be
+        reached; callers that poll decide for themselves what an outage means.
+        """
+        container = self.get_container()
+        if container is None:
+            return None
+        state = (container.attrs or {}).get("State", {}) or {}
+        return GameRun(
+            key=self._run_key(container),
+            started_at=_epoch_from_stamp(str(state.get("StartedAt", ""))),
+            running=str(state.get("Status", "")) == "running",
+        )
 
     def _run_key(self, container: Any) -> tuple[str, str]:
         state = (container.attrs or {}).get("State", {}) or {}

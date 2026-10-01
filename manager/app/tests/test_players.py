@@ -877,3 +877,189 @@ def test_foreign_origin_is_rejected_for_players_writes_and_touches_no_files(rost
             assert response.status_code == 403, path
             assert "cross-site" in response.json()["error"]
     assert _list_files_snapshot(tmp) == before
+
+
+# ------------------------------------------------------------------ online now
+#
+# Who is connected right now comes from the same log the roster is built from, scoped
+# to the CURRENT run of the game container. A run ends when the server stops or the
+# container is replaced, and a run that ended badly (a crash, a kill) never logs the
+# leaves -- so the list has to be reset at the run boundary, not trusted to drain.
+
+from app.docker_control import GameRun  # noqa: E402
+from app.players import LivePlayers  # noqa: E402
+
+B = "76561198000000002"
+JOIN_A = "supervisord: valheim-server 10/01/2026 10:00:00: Got connection SteamID " + A
+JOIN_B = "supervisord: valheim-server 10/01/2026 10:00:00: Got connection SteamID " + B
+LEAVE_A = "supervisord: valheim-server 10/01/2026 10:00:00: Closing socket " + A
+
+
+class RunControl:
+    """A fake DockerControl: one log, and a run the test can stop or replace."""
+
+    def __init__(self):
+        self.lines = []
+        self.run = GameRun(key=("c1", "t1"), started_at=100.0, running=True)
+        self.run_error = None
+
+    def current_run(self):
+        if self.run_error is not None:
+            raise self.run_error
+        return self.run
+
+    def fetch_logs(self, *, since=None, tail="all"):
+        floor = since or 0
+        return [line for line in self.lines if line.epoch >= floor]
+
+    def say(self, epoch, message):
+        self.lines.append(LogLine(epoch, "r", message))
+
+
+def live(tmp_path, control):
+    return LivePlayers(control, PlayerStore(tmp_path / "players.json"))
+
+
+def test_a_player_who_joined_is_online(tmp_path):
+    control = RunControl()
+    control.say(110.0, JOIN_A)
+    players = live(tmp_path, control)
+
+    players.tick(world="Midgard")
+
+    assert players.online() == {A: 110.0}
+
+
+def test_a_player_who_left_is_not_online(tmp_path):
+    control = RunControl()
+    control.say(110.0, JOIN_A)
+    players = live(tmp_path, control)
+    players.tick(world="Midgard")
+
+    control.say(120.0, LEAVE_A)
+    players.tick(world="Midgard")
+
+    assert players.online() == {}
+
+
+def test_nobody_is_online_while_the_server_is_stopped(tmp_path):
+    control = RunControl()
+    control.say(110.0, JOIN_A)
+    players = live(tmp_path, control)
+    players.tick(world="Midgard")
+
+    control.run = GameRun(key=("c1", "t1"), started_at=100.0, running=False)
+    players.tick(world="Midgard")
+
+    assert players.online() == {}
+
+
+def test_a_new_run_forgets_players_whose_leave_was_never_logged(tmp_path):
+    """A crash or kill logs no leaves; the next run must not inherit them."""
+    control = RunControl()
+    control.say(110.0, JOIN_A)
+    players = live(tmp_path, control)
+    players.tick(world="Midgard")
+
+    control.run = GameRun(key=("c1", "t2"), started_at=500.0, running=True)
+    control.say(510.0, JOIN_B)
+    players.tick(world="Midgard")
+
+    assert players.online() == {B: 510.0}
+
+
+def test_a_replaced_container_starts_an_empty_list(tmp_path):
+    control = RunControl()
+    control.say(110.0, JOIN_A)
+    players = live(tmp_path, control)
+    players.tick(world="Midgard")
+
+    control.run = GameRun(key=("c2", "t9"), started_at=900.0, running=True)
+    players.tick(world="Midgard")
+
+    assert players.online() == {}
+
+
+def test_the_first_tick_still_backfills_the_roster_from_earlier_runs(tmp_path):
+    """Online is scoped to this run; the roster is not -- it keeps everyone the
+    container's log still remembers, from every run in it."""
+    control = RunControl()
+    control.say(50.0, JOIN_B)  # an earlier run, before StartedAt
+    control.say(110.0, JOIN_A)
+    store = PlayerStore(tmp_path / "players.json")
+    players = LivePlayers(control, store)
+
+    players.tick(world="Midgard")
+
+    assert set(store.load()) == {A, B}
+    assert players.online() == {A: 110.0}
+
+
+def test_no_container_means_nobody_online(tmp_path):
+    control = RunControl()
+    control.run = None
+    players = live(tmp_path, control)
+
+    players.tick(world=None)
+
+    assert players.online() == {}
+
+
+def test_a_docker_error_does_not_escape_a_tick(tmp_path):
+    control = RunControl()
+    control.run_error = DockerControlError("nope", "detail")
+    players = live(tmp_path, control)
+
+    players.tick(world=None)  # must not raise
+
+    assert players.online() == {}
+
+
+def test_the_watcher_polls_often_enough_for_an_online_list():
+    assert WATCH_INTERVAL_SECONDS <= 5
+
+
+def test_the_roster_marks_who_is_online(client_with_roster):
+    client, _ = client_with_roster
+
+    class Stub:
+        def online(self):
+            return {A: 1_790_000_000.0}
+
+    client.app.state.live_players = Stub()
+    rows = {row["id"]: row for row in client.get("/api/players").json()["players"]}
+
+    assert rows[A_FILE_ID]["online"] is True
+    assert rows[A_FILE_ID]["online_since"] == 1_790_000_000.0
+    others = [row for key, row in rows.items() if key != A_FILE_ID]
+    assert others and all(row["online"] is False for row in others)
+    assert all(row["online_since"] is None for row in others)
+
+
+def test_without_a_watcher_nobody_is_online(client_with_roster):
+    client, _ = client_with_roster
+    client.app.state.live_players = None
+
+    rows = client.get("/api/players").json()["players"]
+
+    assert rows and all(row["online"] is False for row in rows)
+
+
+def test_the_docker_run_identity(env_file, fake_docker):
+    """No container, a created one, a started one, and a restart that moves the key."""
+    from app.tests.test_edge_cases import build_config, build_control
+
+    control = build_control(build_config(env_file), fake_docker)
+    assert control.current_run() is None
+
+    container = fake_docker.containers.create("img", name=control.container_name)
+    created = control.current_run()
+    assert created is not None and created.running is False
+
+    container.start()
+    first = control.current_run()
+    assert first.running is True and first.started_at > 0
+
+    container.log_messages.append("a line")  # so the next StartedAt differs
+    container.start()
+    assert control.current_run().key != first.key
