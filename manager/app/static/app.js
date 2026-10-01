@@ -35,7 +35,8 @@
     banner: document.getElementById("banner"),
     console: document.getElementById("console"),
     follow: document.getElementById("follow"),
-    settings: document.querySelector("#settings-table tbody"),
+    settings: document.getElementById("settings-table"),
+    passPeek: document.getElementById("btn-pass-peek"),
     settingsTable: document.getElementById("settings-table"),
     settingsForm: document.getElementById("settings-form"),
     settingsEdit: document.getElementById("btn-settings-edit"),
@@ -1123,6 +1124,9 @@
     // Cancel and a completed save both mean the typed values are finished with.
     draft = null;
     editing = false;
+    // Never leave a password showing for the next time the editor opens.
+    var pass = document.getElementById("field-SERVER_PASS");
+    if (pass && pass.type !== "password") { togglePassPeek(); }
     syncSettingsControls();
   }
 
@@ -1136,6 +1140,15 @@
       SERVER_PUBLIC: fields.SERVER_PUBLIC.checked ? "1" : "0",
       CROSSPLAY: fields.CROSSPLAY.checked ? "true" : "false"
     };
+  }
+
+  function togglePassPeek() {
+    var field = document.getElementById("field-SERVER_PASS");
+    if (!field || !el.passPeek) { return; }
+    var show = field.type === "password";
+    field.type = show ? "text" : "password";
+    el.passPeek.textContent = show ? "Hide" : "Show";
+    el.passPeek.setAttribute("aria-pressed", show ? "true" : "false");
   }
 
   function saveSettings() {
@@ -1174,19 +1187,55 @@
       if (settingsError) { showError(settingsError, "settings"); } else { clearErrorFrom("settings"); }
       return;
     }
-    var html = "";
-    for (var i = 0; i < rows.length; i++) {
-      html += "<tr><th scope=\"row\"></th><td></td></tr>";
-    }
-    el.settings.innerHTML = html;
-    var trs = el.settings.querySelectorAll("tr");
-    for (var j = 0; j < rows.length; j++) {
-      // The manager names each setting; a key it has no name for is shown as itself.
-      trs[j].children[0].textContent = rows[j].label || rows[j].key;
-      trs[j].children[1].textContent = rows[j].value;
+    // One card per group, in the manager's group order; within a group, the file's
+    // own order. A row from a manager too old to send a group lands under System.
+    el.settings.textContent = "";
+    for (var g = 0; g < SETTINGS_GROUP_ORDER.length; g++) {
+      var name = SETTINGS_GROUP_ORDER[g];
+      var members = rows.filter(function (row) { return (row.group || "System") === name; });
+      if (!members.length) { continue; }
+      var card = document.createElement("section");
+      card.className = "set-group";
+      var heading = document.createElement("h3");
+      heading.className = "section-tag";
+      heading.textContent = name;
+      card.appendChild(heading);
+      var table = document.createElement("table");
+      table.className = "kv-table";
+      var body = document.createElement("tbody");
+      for (var j = 0; j < members.length; j++) { body.appendChild(settingRow(members[j])); }
+      table.appendChild(body);
+      card.appendChild(table);
+      el.settings.appendChild(card);
     }
     el.settings.setAttribute("data-signature", signature);
     if (settingsError) { showError(settingsError, "settings"); } else { clearErrorFrom("settings"); }
+  }
+
+  var SETTINGS_GROUP_ORDER = ["Server", "World", "Updates & backups", "System"];
+
+  function settingRow(row) {
+    var tr = document.createElement("tr");
+    var th = document.createElement("th");
+    th.scope = "row";
+    // The manager names each setting; a key it has no name for is shown as itself.
+    th.textContent = row.label || row.key;
+    var td = document.createElement("td");
+    if (row.flag === true || row.flag === false) {
+      var pill = document.createElement("span");
+      pill.className = "flag " + (row.flag ? "flag-on" : "flag-off");
+      pill.textContent = row.flag ? "On" : "Off";
+      pill.title = "Stored as " + row.value;
+      td.appendChild(pill);
+    } else if (row.secret && !row.value) {
+      td.className = "is-unset";
+      td.textContent = "not set";
+    } else {
+      td.textContent = row.value;
+    }
+    tr.appendChild(th);
+    tr.appendChild(td);
+    return tr;
   }
 
   function renderModifiers(mods) {
@@ -2979,6 +3028,7 @@
       renderModifierPreview();
     }
     el.settingsEdit.addEventListener("click", openEditor);
+    if (el.passPeek) { el.passPeek.addEventListener("click", togglePassPeek); }
     el.settingsCancel.addEventListener("click", function () {
       system("settings edit cancelled");
       closeEditor();

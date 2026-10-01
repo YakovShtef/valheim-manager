@@ -37,6 +37,46 @@ log = logging.getLogger(__name__)
 # Keys whose values must never be rendered into the WebUI.
 SECRET_KEY_PATTERN = re.compile(r"(PASS|PASSWORD|SECRET|TOKEN|APIKEY|API_KEY)", re.IGNORECASE)
 
+# Which card each setting sits in on the Settings tab, in the order the cards are
+# drawn. A key not named here -- including any the operator added to the file
+# themselves -- goes under System. Display only: the file's order is untouched.
+SETTINGS_GROUP_ORDER = ("Server", "World", "Updates & backups", "System")
+SETTINGS_GROUPS = {
+    "SERVER_NAME": "Server",
+    "SERVER_PORT": "Server",
+    "SERVER_PASS": "Server",
+    "SERVER_PUBLIC": "Server",
+    "CROSSPLAY": "Server",
+    "WORLD_NAME": "World",
+    "SERVER_ARGS": "World",
+    "UPDATE_ON_START": "Updates & backups",
+    "UPDATE_CRON": "Updates & backups",
+    "UPDATE_IF_IDLE": "Updates & backups",
+    "RESTART_CRON": "Updates & backups",
+    "BACKUPS": "Updates & backups",
+    "BACKUPS_INTERVAL": "Updates & backups",
+    "BACKUPS_CRON": "Updates & backups",
+    "BACKUPS_MAX_AGE": "Updates & backups",
+    "BACKUPS_MAX_COUNT": "Updates & backups",
+    "BACKUPS_IF_IDLE": "Updates & backups",
+}
+# On/off settings, shown as On or Off rather than as the raw word the file holds.
+FLAG_KEYS = frozenset({"SERVER_PUBLIC", "CROSSPLAY", "UPDATE_ON_START", "UPDATE_IF_IDLE",
+                       "BACKUPS", "BACKUPS_IF_IDLE", "BEPINEX", "VALHEIM_PLUS"})
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off", ""})
+
+
+def flag_state(key: str, raw: str) -> bool | None:
+    """True/False for an on/off setting, ``None`` for anything else."""
+    word = (raw or "").strip().lower()
+    if key in FLAG_KEYS and (word in _TRUE_WORDS or word in _FALSE_WORDS):
+        return word in _TRUE_WORDS
+    if key not in FLAG_KEYS and word in ("true", "false"):
+        return word == "true"
+    return None
+
+
 # Keys surfaced first in the UI's "current settings" panel; anything else in the
 # file is still shown, just after these.
 PRIMARY_KEYS = (
@@ -378,6 +418,8 @@ class SettingsStore:
                     "label": SETTINGS_LABELS.get(key, key),
                     "value": MASK if (secret and raw) else raw,
                     "secret": secret,
+                    "group": SETTINGS_GROUPS.get(key, "System"),
+                    "flag": flag_state(key, raw) if not secret else None,
                 }
             )
         return rows
@@ -487,6 +529,7 @@ class SettingsStore:
 
 
 __all__ = [
+    "SETTINGS_GROUP_ORDER",
     "DEFAULT_SETTINGS_TEXT",
     "MASK",
     "SettingsFileError",

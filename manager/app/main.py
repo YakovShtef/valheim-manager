@@ -82,6 +82,7 @@ from .modifiers import (
 )
 from .modifiers import parse as parse_modifiers
 from .settings_store import (
+    SETTINGS_GROUP_ORDER,
     MASK,
     SettingsFileError,
     SettingsStore,
@@ -824,6 +825,7 @@ def create_app(
             "index.html",
             {
                 "settings_rows": rows,
+                "settings_group_order": SETTINGS_GROUP_ORDER,
                 "settings_error": settings_error,
                 "container_name": config.container_name,
                 "image": config.image,

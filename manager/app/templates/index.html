@@ -107,130 +107,188 @@
 
 <div id="panel-settings" class="tabpanel" role="tabpanel" aria-labelledby="tab-settings"
      tabindex="0" hidden>
-  <section class="card">
-    <h2>
-      Current settings
-      <button id="btn-settings-edit" class="ghost small" disabled>Edit</button>
-    </h2>
+  <section class="panel settings-panel">
+    <header class="panel-head">
+      <h2 class="section-tag">
+        Server settings
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="About these settings"
+                  aria-describedby="settings-about">?</button>
+          <span class="hint-bubble" id="settings-about" role="tooltip" hidden>
+            Your world and your backups are never touched by saving here. Settings you
+            added to the file yourself are kept as they are.
+          </span>
+        </span>
+      </h2>
+      <div class="panel-tools">
+        <button id="btn-settings-edit" class="primary small" disabled>Edit</button>
+      </div>
+    </header>
     {% if settings_error %}
-      <p class="banner banner-error">{{ settings_error }}</p>
+      <p class="notice notice-error">{{ settings_error }}</p>
     {% endif %}
     {# Filled in by app.js with the reason, and only while the server is not off. A
-       live region: the reason arrives from a status push, not from a page load, so a
-       screen reader would otherwise never hear why Edit went away. #}
-    <p id="settings-locked" class="muted small" role="status" aria-live="polite" hidden></p>
-    <p class="muted" id="settings-help">
-      Your server's settings as they are now. Turn the server off to change them, then
-      press <strong>Start</strong> and the new settings take effect. Your world and
-      your backups are never touched.
+       live region: the reason arrives from a status push, not from a page load. #}
+    <p id="settings-locked" class="notice notice-warn" role="status" aria-live="polite" hidden></p>
+    <p class="muted notice-line" id="settings-help">
+      Turn the server off to change them, then press <strong>Start</strong> and the new
+      settings take effect.
     </p>
-    <table class="settings" id="settings-table">
-      <tbody>
-      {% for row in settings_rows %}
-        <tr><th scope="row">{{ row.key }}</th><td>{{ row.value }}</td></tr>
+
+    {# Read-only view: one card per group. Rebuilt by app.js from each status push,
+       but only when a value actually changed. #}
+    <div id="settings-table" class="settings-groups">
+      {% for group in settings_group_order %}
+      {% set group_rows = settings_rows | selectattr("group", "equalto", group) | list %}
+      {% if group_rows %}
+      <section class="set-group">
+        <h3 class="section-tag">{{ group }}</h3>
+        <table class="kv-table">
+          <tbody>
+          {% for row in group_rows %}
+            <tr><th scope="row">{{ row.label or row.key }}</th><td>
+              {%- if row.flag is sameas true -%}<span class="flag flag-on">On</span>
+              {%- elif row.flag is sameas false -%}<span class="flag flag-off">Off</span>
+              {%- elif row.secret and not row.value -%}<span class="is-unset">not set</span>
+              {%- else -%}{{ row.value }}{%- endif -%}
+            </td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </section>
+      {% endif %}
       {% endfor %}
-      </tbody>
-    </table>
+    </div>
 
     {# Prefilled from the last status push when Edit is pressed, so it always opens on
        the values the file holds now rather than on page-load values. #}
-    <form id="settings-form" class="settings-form" autocomplete="off"
+    <form id="settings-form" class="settings-form settings-edit" autocomplete="off"
           data-mask="{{ mask }}" hidden>
-      <label for="field-SERVER_NAME">Server name</label>
-      <input id="field-SERVER_NAME" name="SERVER_NAME" type="text" required>
+      <div class="edit-grid">
+        <fieldset class="set-group">
+          <legend class="section-tag">Server</legend>
+          <label for="field-SERVER_NAME">Server name</label>
+          <input id="field-SERVER_NAME" name="SERVER_NAME" type="text" required>
 
-      <label for="field-WORLD_NAME">World name</label>
-      <input id="field-WORLD_NAME" name="WORLD_NAME" type="text" required>
-      <p class="muted small">
-        The name of your save file &mdash; no slashes. Put in a name you have not used
-        before and Valheim builds a <em>brand-new</em> world next time you start. Your
-        old world is kept, so you can always switch back.
-      </p>
+          <label for="field-SERVER_PASS">
+            Join password
+            <span class="hint-anchor">
+              <button type="button" class="info-dot" aria-label="Password rules"
+                      aria-describedby="pass-hint">?</button>
+              <span class="hint-bubble" id="pass-hint" role="tooltip" hidden>
+                Leave <code>{{ mask }}</code> to keep the current password, or type a new
+                one: at least {{ min_server_pass_length }} characters, and not part of
+                the server name.
+              </span>
+            </span>
+          </label>
+          <div class="input-peek">
+            <input id="field-SERVER_PASS" name="SERVER_PASS" type="password" required
+                   minlength="{{ min_server_pass_length }}" spellcheck="false"
+                   autocomplete="new-password">
+            <button type="button" class="ghost small" id="btn-pass-peek"
+                    aria-controls="field-SERVER_PASS" aria-pressed="false">Show</button>
+          </div>
 
-      <label for="field-SERVER_PASS">Join password</label>
-      <input id="field-SERVER_PASS" name="SERVER_PASS" type="text" required
-             minlength="{{ min_server_pass_length }}" spellcheck="false">
-      <p class="muted small">
-        Leave <code>{{ mask }}</code> as it is to keep your current password, or type
-        a new one over it &mdash; at least {{ min_server_pass_length }} characters, and
-        it cannot be part of the server name.
-      </p>
+          <label for="field-SERVER_PORT">
+            Game port (UDP)
+            <span class="hint-anchor">
+              <button type="button" class="info-dot" aria-label="About the port"
+                      aria-describedby="port-hint">?</button>
+              <span class="hint-bubble" id="port-hint" role="tooltip" hidden>
+                Valheim also uses the next two ports up. Change it only if something
+                else already uses it.
+              </span>
+            </span>
+          </label>
+          <input id="field-SERVER_PORT" name="SERVER_PORT" type="number" min="1" max="65533" class="mono-field">
 
-      <label for="field-SERVER_PORT">Game port (UDP)</label>
-      <input id="field-SERVER_PORT" name="SERVER_PORT" type="number" min="1" max="65533">
-      <p class="muted small">Leave this alone unless something else is already using it.
-        Valheim quietly uses the next two numbers up as well.</p>
+          <label class="switch switch-row">
+            <input id="field-SERVER_PUBLIC" name="SERVER_PUBLIC" type="checkbox">
+            <span class="switch-track" aria-hidden="true"></span>
+            Public server list
+          </label>
+          <label class="switch switch-row">
+            <input id="field-CROSSPLAY" name="CROSSPLAY" type="checkbox">
+            <span class="switch-track" aria-hidden="true"></span>
+            Crossplay (Xbox / Game Pass)
+          </label>
+        </fieldset>
 
-      <label class="check">
-        <input id="field-SERVER_PUBLIC" name="SERVER_PUBLIC" type="checkbox">
-        List in the public community server browser
-      </label>
-      <label class="check">
-        <input id="field-CROSSPLAY" name="CROSSPLAY" type="checkbox">
-        Allow Xbox / Game Pass players (crossplay)
-      </label>
+        <fieldset class="set-group">
+          <legend class="section-tag">World</legend>
+          <label for="field-WORLD_NAME">
+            World name
+            <span class="hint-anchor">
+              <button type="button" class="info-dot" aria-label="About world names"
+                      aria-describedby="world-name-hint">?</button>
+              <span class="hint-bubble" id="world-name-hint" role="tooltip" hidden>
+                A name you have not used before makes a brand-new world the next time you
+                start. Your old world is kept, so you can switch back.
+              </span>
+            </span>
+          </label>
+          <input id="field-WORLD_NAME" name="WORLD_NAME" type="text" required>
+          <p class="muted notice-line">A new name starts a brand-new world; your old world is kept.</p>
 
-      {# The modifier controls. Rendered from app/modifiers.py: the options are its
-         vocabulary, and the categories come out in its own order, because the preview
-         below walks these controls in document order to build the string. #}
-      <fieldset class="modifiers" id="modifier-fields">
-        <legend>World modifiers</legend>
-        <p class="muted small">
-          Valheim's own difficulty settings. They change how the game plays, never your
-          existing world. Leave anything on <em>normal</em> to keep Valheim's default.
-        </p>
-
-        <label for="field-modifier-preset">{{ modifier_labels["preset"] }}</label>
-        <select id="field-modifier-preset" data-modifier-field="preset">
-          <option value="">normal &mdash; Valheim's default</option>
-          {% for value in modifier_presets if value != "normal" %}
-          <option value="{{ value }}">{{ value }}</option>
-          {% endfor %}
-        </select>
-        <p class="muted small">
-          A preset sets everything below in one go. Pick one first, then change any
-          single row underneath if you want to.
-        </p>
-
-        {% for category, values in modifier_categories.items() %}
-        <label for="field-modifier-{{ category }}">{{ modifier_labels[category] }}</label>
-        <select id="field-modifier-{{ category }}" data-modifier-field="{{ category }}">
-          <option value="">normal &mdash; Valheim's default</option>
-          {% for value in values if value != "normal" %}
-          <option value="{{ value }}">{{ value }}</option>
-          {% endfor %}
-        </select>
-        {% endfor %}
-
-        {% for toggle in modifier_toggles %}
-        <label class="check">
-          <input id="field-modifier-{{ toggle }}" type="checkbox"
-                 data-modifier-toggle="{{ toggle }}">
-          {{ modifier_labels[toggle] }}
-        </label>
-        {% endfor %}
-
-        <p class="muted small" id="modifier-preview-label">
-          What gets handed to Valheim:
-        </p>
-        <output id="modifier-preview" class="snippet"
-                aria-labelledby="modifier-preview-label" aria-live="polite"></output>
-        <p class="muted small" id="modifier-unmanaged-note" hidden></p>
-      </fieldset>
-
-      <p class="muted small">
-        Only the settings on this page are changed. Anything else you have added to the
-        settings file yourself is left alone.
-      </p>
-
-      <div class="controls">
+          {# The modifier controls. Rendered from app/modifiers.py: the options are its
+             vocabulary, and the categories come out in its own order, because the
+             preview below walks these controls in document order to build the string. #}
+          <fieldset class="modifiers" id="modifier-fields">
+            <legend class="section-tag">
+              World modifiers
+              <span class="hint-anchor">
+                <button type="button" class="info-dot" aria-label="About world modifiers"
+                        aria-describedby="modifier-hint">?</button>
+                <span class="hint-bubble" id="modifier-hint" role="tooltip" hidden>
+                  Valheim's own difficulty settings. They change how the game plays, never
+                  your existing world. A preset sets every row at once; change single rows
+                  after. Normal is Valheim's default.
+                </span>
+              </span>
+            </legend>
+            <div class="modifier-grid">
+              <label for="field-modifier-preset">{{ modifier_labels["preset"] }}</label>
+              <select id="field-modifier-preset" data-modifier-field="preset">
+                <option value="">normal</option>
+                {% for value in modifier_presets if value != "normal" %}
+                <option value="{{ value }}">{{ value }}</option>
+                {% endfor %}
+              </select>
+              {% for category, values in modifier_categories.items() %}
+              <label for="field-modifier-{{ category }}">{{ modifier_labels[category] }}</label>
+              <select id="field-modifier-{{ category }}" data-modifier-field="{{ category }}">
+                <option value="">normal</option>
+                {% for value in values if value != "normal" %}
+                <option value="{{ value }}">{{ value }}</option>
+                {% endfor %}
+              </select>
+              {% endfor %}
+            </div>
+            <div class="modifier-toggles">
+              {% for toggle in modifier_toggles %}
+              <label class="switch switch-row">
+                <input id="field-modifier-{{ toggle }}" type="checkbox"
+                       data-modifier-toggle="{{ toggle }}">
+                <span class="switch-track" aria-hidden="true"></span>
+                {{ modifier_labels[toggle] }}
+              </label>
+              {% endfor %}
+            </div>
+            <p class="muted small" id="modifier-preview-label">Passed to Valheim:</p>
+            <output id="modifier-preview" class="snippet"
+                    aria-labelledby="modifier-preview-label" aria-live="polite"></output>
+            <p class="muted small" id="modifier-unmanaged-note" hidden></p>
+          </fieldset>
+        </fieldset>
+      </div>
+      <div class="controls form-actions">
         <button type="submit" id="btn-settings-save" class="primary">Save</button>
         <button type="button" id="btn-settings-cancel" class="ghost">Cancel</button>
       </div>
     </form>
   </section>
 </div>
-
 <div id="panel-worlds" class="tabpanel" role="tabpanel" aria-labelledby="tab-worlds"
      tabindex="0" hidden>
   <section class="card worlds-card">
