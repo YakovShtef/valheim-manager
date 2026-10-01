@@ -40,7 +40,10 @@ SECRET_KEY_PATTERN = re.compile(r"(PASS|PASSWORD|SECRET|TOKEN|APIKEY|API_KEY)", 
 # Which card each setting sits in on the Settings tab, in the order the cards are
 # drawn. A key not named here -- including any the operator added to the file
 # themselves -- goes under System. Display only: the file's order is untouched.
-SETTINGS_GROUP_ORDER = ("Server", "World", "Updates & backups", "System")
+# "Game backups" is deliberately not a card: the panel shows one backup schedule, the
+# dashboard's own (a Backups card the template draws after Updates), and the game
+# image's BACKUPS* keys stay in the file without being shown.
+SETTINGS_GROUP_ORDER = ("Server", "World", "Updates", "System")
 SETTINGS_GROUPS = {
     "SERVER_NAME": "Server",
     "SERVER_PORT": "Server",
@@ -49,16 +52,16 @@ SETTINGS_GROUPS = {
     "CROSSPLAY": "Server",
     "WORLD_NAME": "World",
     "SERVER_ARGS": "World",
-    "UPDATE_ON_START": "Updates & backups",
-    "UPDATE_CRON": "Updates & backups",
-    "UPDATE_IF_IDLE": "Updates & backups",
-    "RESTART_CRON": "Updates & backups",
-    "BACKUPS": "Updates & backups",
-    "BACKUPS_INTERVAL": "Updates & backups",
-    "BACKUPS_CRON": "Updates & backups",
-    "BACKUPS_MAX_AGE": "Updates & backups",
-    "BACKUPS_MAX_COUNT": "Updates & backups",
-    "BACKUPS_IF_IDLE": "Updates & backups",
+    "UPDATE_ON_START": "Updates",
+    "UPDATE_CRON": "Updates",
+    "UPDATE_IF_IDLE": "Updates",
+    "RESTART_CRON": "Updates",
+    "BACKUPS": "Game backups",
+    "BACKUPS_INTERVAL": "Game backups",
+    "BACKUPS_CRON": "Game backups",
+    "BACKUPS_MAX_AGE": "Game backups",
+    "BACKUPS_MAX_COUNT": "Game backups",
+    "BACKUPS_IF_IDLE": "Game backups",
 }
 # On/off settings, shown as On or Off rather than as the raw word the file holds.
 FLAG_KEYS = frozenset({"SERVER_PUBLIC", "CROSSPLAY", "UPDATE_ON_START", "UPDATE_IF_IDLE",
@@ -103,9 +106,6 @@ SETTINGS_LABELS = {
     "CROSSPLAY": "Crossplay (Xbox / Game Pass)",
     "SERVER_ARGS": "World modifiers",
     "TZ": "Time zone",
-    "BACKUPS": "Automatic backups",
-    "BACKUPS_INTERVAL": "Backup every (seconds)",
-    "BACKUPS_MAX_AGE": "Keep backups for (days)",
     "UPDATE_ON_START": "Update the game on start",
 }
 

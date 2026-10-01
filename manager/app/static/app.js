@@ -75,17 +75,9 @@
     backupsTable: document.getElementById("backups-table"),
     backupsBody: document.getElementById("backups-body"),
     backupsEmpty: document.getElementById("backups-empty"),
-    backupScheduleForm: document.getElementById("backup-schedule-form"),
-    backupEnabled: document.getElementById("backup-enabled"),
-    backupIntervalFields: document.getElementById("backup-interval-fields"),
-    backupEveryDay: document.getElementById("backup-every-day"),
-    backupEveryCustom: document.getElementById("backup-every-custom"),
-    backupEveryAt: document.getElementById("backup-every-at"),
     backupIntervalHours: document.getElementById("backup-interval-hours"),
     backupDailyTime: document.getElementById("backup-daily-time"),
     backupKeep: document.getElementById("backup-keep"),
-    backupScheduleNote: document.getElementById("backup-schedule-note"),
-    backupScheduleSave: document.getElementById("btn-backup-schedule-save"),
     restoreDialog: document.getElementById("restore-dialog"),
     backupDeleteDialog: document.getElementById("backup-delete-dialog"),
     backupDeleteName: document.getElementById("backup-delete-dialog-name"),
@@ -688,23 +680,37 @@
     return row;
   }
 
+  // Every schedule form on the page (today: the Worlds tab's), found by its id prefix.
+  var scheduleForms = [];
+  // The last schedule the manager sent, for the read-only card in Server settings.
+  var lastSchedule = null;
+  var lastScheduleWorld = "";
+
+  function scheduleForm(form) {
+    var p = form.id.replace(/backup-schedule-form$/, "");
+    function byId(id) { return document.getElementById(p + id); }
+    return {
+      form: form,
+      enabled: byId("backup-enabled"),
+      fields: byId("backup-interval-fields"),
+      everyDay: byId("backup-every-day"),
+      everyCustom: byId("backup-every-custom"),
+      everyAt: byId("backup-every-at"),
+      hours: byId("backup-interval-hours"),
+      dailyTime: byId("backup-daily-time"),
+      keep: byId("backup-keep"),
+      note: byId("backup-schedule-note"),
+      save: byId("btn-backup-schedule-save")
+    };
+  }
+
   function renderSchedule(schedule, loadedWorld) {
-    if (!el.backupEnabled) { return; }
-    el.backupEnabled.checked = !!schedule.enabled;
     var hours = Number(schedule.interval_hours) || backupLimit("default_interval_hours", 24);
     var isDefault = hours === backupLimit("default_interval_hours", 24);
     // The mode decides which radio is on; the interval only decides which of the two
     // interval radios it is. Both settings are carried whichever is in force, so
     // switching away and back finds the other where it was left.
     var daily = schedule.mode === backupLimit("mode_daily", "daily");
-    el.backupEveryAt.checked = daily;
-    el.backupEveryDay.checked = !daily && isDefault;
-    el.backupEveryCustom.checked = !daily && !isDefault;
-    el.backupIntervalHours.value = hours;
-    el.backupDailyTime.value = schedule.daily_time ||
-      backupLimit("default_daily_time", "03:00");
-    el.backupKeep.value = Number(schedule.keep_per_world) || backupLimit("default_keep", 7);
-    syncScheduleControls();
 
     var note = "";
     if (!schedule.enabled) {
@@ -719,23 +725,97 @@
     } else {
       note = "The first automatic backup will be taken shortly.";
     }
-    el.backupScheduleNote.textContent = note;
+
+    lastSchedule = schedule;
+    lastScheduleWorld = loadedWorld;
+    fillBackupCard();
+
+    for (var i = 0; i < scheduleForms.length; i++) {
+      var c = scheduleForms[i];
+      c.enabled.checked = !!schedule.enabled;
+      c.everyAt.checked = daily;
+      c.everyDay.checked = !daily && isDefault;
+      c.everyCustom.checked = !daily && !isDefault;
+      c.hours.value = hours;
+      c.dailyTime.value = schedule.daily_time ||
+        backupLimit("default_daily_time", "03:00");
+      c.keep.value = Number(schedule.keep_per_world) || backupLimit("default_keep", 7);
+      c.note.textContent = note;
+      syncScheduleControls(c);
+    }
   }
 
-  function syncScheduleControls() {
-    if (!el.backupEnabled) { return; }
-    var on = el.backupEnabled.checked;
-    el.backupScheduleForm.classList.toggle("is-off", !on);
-    el.backupIntervalFields.classList.toggle("is-default", el.backupEveryDay.checked);
-    el.backupIntervalFields.classList.toggle("is-daily", el.backupEveryAt.checked);
+  // Server settings' Backups card: the Worlds tab's schedule, as words.
+  function fillBackupCard() {
+    var auto = document.getElementById("settings-backup-auto");
+    if (!auto || !lastSchedule) { return; }
+    var s = lastSchedule;
+    auto.textContent = "";
+    var pill = document.createElement("span");
+    pill.className = "flag " + (s.enabled ? "flag-on" : "flag-off");
+    pill.textContent = s.enabled ? "On" : "Off";
+    auto.appendChild(pill);
+    var hours = Number(s.interval_hours) || backupLimit("default_interval_hours", 24);
+    document.getElementById("settings-backup-when").textContent =
+      s.mode === backupLimit("mode_daily", "daily")
+        ? "Daily at " + (s.daily_time || backupLimit("default_daily_time", "03:00"))
+        : "Every " + hours + " h";
+    document.getElementById("settings-backup-keep").textContent =
+      (Number(s.keep_per_world) || backupLimit("default_keep", 7)) + " per world";
+    document.getElementById("settings-backup-last").textContent = s.last_run_at
+      ? formatTaken(s.last_run_at) + (lastScheduleWorld ? " (" + lastScheduleWorld + ")" : "")
+      : "none yet";
+  }
+
+  function syncScheduleControls(c) {
+    var on = c.enabled.checked;
+    c.form.classList.toggle("is-off", !on);
+    c.fields.classList.toggle("is-default", c.everyDay.checked);
+    c.fields.classList.toggle("is-daily", c.everyAt.checked);
     // Disabled rather than hidden: the value still says what would happen, and a
     // hidden control that reappears where you were not looking is worse.
-    el.backupEveryDay.disabled = !on;
-    el.backupEveryCustom.disabled = !on;
-    el.backupEveryAt.disabled = !on;
-    el.backupIntervalHours.disabled = !on;
-    el.backupDailyTime.disabled = !on;
-    el.backupKeep.disabled = !on;
+    c.everyDay.disabled = !on;
+    c.everyCustom.disabled = !on;
+    c.everyAt.disabled = !on;
+    c.hours.disabled = !on;
+    c.dailyTime.disabled = !on;
+    c.keep.disabled = !on;
+  }
+
+  function initScheduleForm(c) {
+    var sync = function () { syncScheduleControls(c); };
+    c.enabled.addEventListener("change", sync);
+    c.everyDay.addEventListener("change", sync);
+    c.everyCustom.addEventListener("change", sync);
+    c.everyAt.addEventListener("change", sync);
+    // Setting the time is how most people will pick "every day at", so treat it as
+    // that rather than making them find the radio first -- the same courtesy the
+    // hours field gets below.
+    c.dailyTime.addEventListener("focus", function () {
+      if (!c.dailyTime.disabled) { c.everyAt.checked = true; sync(); }
+    });
+    // Typing in the field is how most people will pick "custom", so treat it as that
+    // rather than making them find the radio first.
+    c.hours.addEventListener("focus", function () {
+      if (!c.hours.disabled) { c.everyCustom.checked = true; sync(); }
+    });
+    c.form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var hours = c.everyDay.checked
+        ? backupLimit("default_interval_hours", 24)
+        : Number(c.hours.value);
+      // Both settings go every time, whichever radio is on: the manager keeps the
+      // one not in force so switching modes and back does not lose it.
+      backupAction("/api/backups/schedule", {
+        enabled: c.enabled.checked,
+        mode: c.everyAt.checked
+          ? backupLimit("mode_daily", "daily")
+          : backupLimit("mode_interval", "interval"),
+        interval_hours: hours,
+        daily_time: c.dailyTime.value,
+        keep_per_world: Number(c.keep.value)
+      });
+    });
   }
 
   function refreshBackups() {
@@ -777,7 +857,7 @@
     var buttons = el.backupsBody.querySelectorAll("button");
     for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = busy; }
     if (el.backupsRefresh) { el.backupsRefresh.disabled = busy; }
-    if (el.backupScheduleSave) { el.backupScheduleSave.disabled = busy; }
+    for (var j = 0; j < scheduleForms.length; j++) { scheduleForms[j].save.disabled = busy; }
   }
 
   // ------------------------------------------------------------ the restore ask
@@ -853,45 +933,11 @@
     };
 
     el.backupsRefresh.addEventListener("click", refreshBackups);
-    el.backupEnabled.addEventListener("change", syncScheduleControls);
-    el.backupEveryDay.addEventListener("change", syncScheduleControls);
-    el.backupEveryCustom.addEventListener("change", syncScheduleControls);
-    el.backupEveryAt.addEventListener("change", syncScheduleControls);
-    // Setting the time is how most people will pick "every day at", so treat it as
-    // that rather than making them find the radio first -- the same courtesy the
-    // hours field gets below.
-    el.backupDailyTime.addEventListener("focus", function () {
-      if (!el.backupDailyTime.disabled) {
-        el.backupEveryAt.checked = true;
-        syncScheduleControls();
-      }
-    });
-    // Typing in the field is how most people will pick "custom", so treat it as that
-    // rather than making them find the radio first.
-    el.backupIntervalHours.addEventListener("focus", function () {
-      if (!el.backupIntervalHours.disabled) {
-        el.backupEveryCustom.checked = true;
-        syncScheduleControls();
-      }
-    });
-
-    el.backupScheduleForm.addEventListener("submit", function (event) {
-      event.preventDefault();
-      var hours = el.backupEveryDay.checked
-        ? backupLimit("default_interval_hours", 24)
-        : Number(el.backupIntervalHours.value);
-      // Both settings go every time, whichever radio is on: the manager keeps the
-      // one not in force so switching modes and back does not lose it.
-      backupAction("/api/backups/schedule", {
-        enabled: el.backupEnabled.checked,
-        mode: el.backupEveryAt.checked
-          ? backupLimit("mode_daily", "daily")
-          : backupLimit("mode_interval", "interval"),
-        interval_hours: hours,
-        daily_time: el.backupDailyTime.value,
-        keep_per_world: Number(el.backupKeep.value)
-      });
-    });
+    var forms = document.querySelectorAll("[data-schedule-form]");
+    for (var f = 0; f < forms.length; f++) {
+      scheduleForms.push(scheduleForm(forms[f]));
+      initScheduleForm(scheduleForms[scheduleForms.length - 1]);
+    }
 
     el.backupsBody.addEventListener("click", function (event) {
       var target = event.target.closest ? event.target : null;
@@ -1306,7 +1352,7 @@
     if (settingsError) { showError(settingsError, "settings"); } else { clearErrorFrom("settings"); }
   }
 
-  var SETTINGS_GROUP_ORDER = ["Server", "World", "Updates & backups", "System"];
+  var SETTINGS_GROUP_ORDER = ["Server", "World", "Updates", "System"];
 
   function settingRow(row) {
     var tr = document.createElement("tr");
@@ -1324,6 +1370,9 @@
     } else if (row.secret && !row.value) {
       td.className = "is-unset";
       td.textContent = "not set";
+    } else if (row.key === "SERVER_ARGS" && !row.value) {
+      td.className = "is-unset";
+      td.textContent = "none, Valheim's defaults";
     } else {
       td.textContent = row.value;
     }
@@ -1551,7 +1600,7 @@
     button.type = "button";
     button.className = "ghost";
     button.setAttribute("data-backup-world", world.name);
-    button.textContent = "Backup";
+    button.textContent = "Back up";
     return button;
   }
 
@@ -1700,6 +1749,13 @@
     if (!el.modsWorld) { return; }
     var known = lastWorlds || [];
     var chosen = el.modsWorld.value || modWorld;
+    var names = known.map(function (world) { return world.name; });
+    if (!chosen || names.indexOf(chosen) < 0) {
+      // Nothing picked yet (or the picked world is gone): open on the world the server
+      // loads, not on whichever name sorts first -- that one is what the note describes.
+      var loaded = known.filter(function (world) { return world.active; })[0];
+      chosen = loaded ? loaded.name : "";
+    }
     el.modsWorld.innerHTML = "";
     for (var i = 0; i < known.length; i++) {
       var option = document.createElement("option");
@@ -3169,6 +3225,12 @@
     forceOffered = false;
     el.force.hidden = true;
     post("/api/stop", { force: true });
+  });
+  // Links between panels ("on the Worlds tab"). Delegated, because the settings cards
+  // that carry one are rebuilt from status pushes.
+  document.addEventListener("click", function (event) {
+    var jump = event.target.closest ? event.target.closest("[data-goto-tab]") : null;
+    if (jump) { selectTab(jump.getAttribute("data-goto-tab"), true); }
   });
   el.clear.addEventListener("click", function () { el.console.textContent = ""; });
   el.consoleFilter.addEventListener("input", applyConsoleFilter);

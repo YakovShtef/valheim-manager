@@ -1,6 +1,85 @@
 {% extends "base.html" %}
 {% block title %}Valheim Server Manager{% endblock %}
 {% block content %}
+{# The dashboard's backup schedule, edited on the Worlds tab only. Server settings
+   shows the same values read-only (see the Backups card there). `p` prefixes every
+   id, should the form ever be drawn a second time; the Worlds copy uses bare ids. #}
+{# The backup schedule as Server settings shows it: read-only, the same values as the
+   Worlds tab form, filled in by app.js once the schedule arrives. #}
+{% macro backup_card() %}
+      <section class="set-group" id="settings-backup-card">
+        <h3 class="section-tag">Backups</h3>
+        <table class="kv-table">
+          <tbody>
+            <tr><th scope="row">Automatic backups</th><td id="settings-backup-auto">–</td></tr>
+            <tr><th scope="row">How often</th><td id="settings-backup-when">–</td></tr>
+            <tr><th scope="row">Keep</th><td id="settings-backup-keep">–</td></tr>
+            <tr><th scope="row">Last automatic backup</th><td id="settings-backup-last">–</td></tr>
+          </tbody>
+        </table>
+        <p class="set-group-note">
+          <button type="button" class="link-button" data-goto-tab="worlds">Change on the Worlds tab</button>
+        </p>
+      </section>
+{% endmacro %}
+
+{% macro schedule_form(p="") %}
+    <form id="{{ p }}backup-schedule-form" class="schedule-bar" data-schedule-form autocomplete="off">
+      <label class="switch">
+        <input type="checkbox" id="{{ p }}backup-enabled" checked>
+        <span class="switch-track" aria-hidden="true"></span>
+        Automatic
+      </label>
+      <fieldset class="schedule-fields" id="{{ p }}backup-interval-fields">
+        <legend class="visually-hidden">How often</legend>
+        <label class="radio">
+          <input type="radio" name="{{ p }}backup-interval-mode" id="{{ p }}backup-every-day"
+                 value="default" checked>
+          Every {{ backup_limits.default_interval_hours }} h
+        </label>
+        <label class="radio">
+          <input type="radio" name="{{ p }}backup-interval-mode" id="{{ p }}backup-every-custom"
+                 value="custom">
+          Every
+          <input type="number" id="{{ p }}backup-interval-hours"
+                 min="{{ backup_limits.min_interval_hours }}"
+                 max="{{ backup_limits.max_interval_hours }}"
+                 value="{{ backup_limits.default_interval_hours }}"
+                 aria-label="Hours between backups">
+          h
+        </label>
+        <label class="radio">
+          <input type="radio" name="{{ p }}backup-interval-mode" id="{{ p }}backup-every-at"
+                 value="at">
+          Daily at
+          <input type="time" id="{{ p }}backup-daily-time"
+                 value="{{ backup_limits.default_daily_time }}"
+                 aria-label="Time of day to back up">
+        </label>
+        <label class="keep">
+          Keep
+          <input type="number" id="{{ p }}backup-keep"
+                 min="{{ backup_limits.min_keep }}" max="{{ backup_limits.max_keep }}"
+                 value="{{ backup_limits.default_keep }}"
+                 aria-label="Backups to keep, per world">
+          per world
+        </label>
+        <span class="hint-anchor">
+          <button type="button" class="info-dot" aria-label="About the schedule"
+                  aria-describedby="{{ p }}schedule-hint">?</button>
+          <span class="hint-bubble hint-bubble-end" id="{{ p }}schedule-hint" role="tooltip" hidden>
+            {{ backup_limits.min_interval_hours }} to {{ backup_limits.max_interval_hours }} hours,
+            or a time on your server's own clock. Past the limit, the oldest automatic
+            backup of that world is deleted; one you took yourself is never removed on a
+            timer.
+          </span>
+        </span>
+      </fieldset>
+      <button type="submit" id="{{ p }}btn-backup-schedule-save" class="primary small">Save</button>
+      <p id="{{ p }}backup-schedule-note" class="muted small schedule-note" role="status" aria-live="polite"></p>
+    </form>
+{% endmacro %}
+
 <header class="topbar">
   <h1 class="brand">
     <img src="/static/icon.png" alt="" width="22" height="22">
@@ -170,6 +249,7 @@
               {%- if row.flag is sameas true -%}<span class="flag flag-on">On</span>
               {%- elif row.flag is sameas false -%}<span class="flag flag-off">Off</span>
               {%- elif row.secret and not row.value -%}<span class="is-unset">not set</span>
+              {%- elif row.key == "SERVER_ARGS" and not row.value -%}<span class="is-unset">none, Valheim's defaults</span>
               {%- else -%}{{ row.value }}{%- endif -%}
             </td></tr>
           {% endfor %}
@@ -178,6 +258,11 @@
       </section>
       {% endif %}
       {% endfor %}
+    </div>
+    {# Outside #settings-table, which app.js rebuilds from the settings file: this card
+       comes from the backup schedule instead. Same grid, so it lines up underneath. #}
+    <div class="settings-groups settings-groups-more">
+      {{ backup_card() }}
     </div>
 
     {# Prefilled from the last status push when Edit is pressed, so it always opens on
@@ -429,60 +514,7 @@
       </div>
     </header>
     <p id="backups-error" class="notice notice-error" role="alert" hidden></p>
-    <form id="backup-schedule-form" class="schedule-bar" autocomplete="off">
-      <label class="switch">
-        <input type="checkbox" id="backup-enabled" checked>
-        <span class="switch-track" aria-hidden="true"></span>
-        Automatic
-      </label>
-      <fieldset class="schedule-fields" id="backup-interval-fields">
-        <legend class="visually-hidden">How often</legend>
-        <label class="radio">
-          <input type="radio" name="backup-interval-mode" id="backup-every-day"
-                 value="default" checked>
-          Every {{ backup_limits.default_interval_hours }} h
-        </label>
-        <label class="radio">
-          <input type="radio" name="backup-interval-mode" id="backup-every-custom"
-                 value="custom">
-          Every
-          <input type="number" id="backup-interval-hours"
-                 min="{{ backup_limits.min_interval_hours }}"
-                 max="{{ backup_limits.max_interval_hours }}"
-                 value="{{ backup_limits.default_interval_hours }}"
-                 aria-label="Hours between backups">
-          h
-        </label>
-        <label class="radio">
-          <input type="radio" name="backup-interval-mode" id="backup-every-at"
-                 value="at">
-          Daily at
-          <input type="time" id="backup-daily-time"
-                 value="{{ backup_limits.default_daily_time }}"
-                 aria-label="Time of day to back up">
-        </label>
-        <label class="keep">
-          Keep
-          <input type="number" id="backup-keep"
-                 min="{{ backup_limits.min_keep }}" max="{{ backup_limits.max_keep }}"
-                 value="{{ backup_limits.default_keep }}"
-                 aria-label="Backups to keep, per world">
-          per world
-        </label>
-        <span class="hint-anchor">
-          <button type="button" class="info-dot" aria-label="About the schedule"
-                  aria-describedby="schedule-hint">?</button>
-          <span class="hint-bubble hint-bubble-end" id="schedule-hint" role="tooltip" hidden>
-            {{ backup_limits.min_interval_hours }} to {{ backup_limits.max_interval_hours }} hours,
-            or a time on your server's own clock. Past the limit, the oldest automatic
-            backup of that world is deleted; one you took yourself is never removed on a
-            timer.
-          </span>
-        </span>
-      </fieldset>
-      <button type="submit" id="btn-backup-schedule-save" class="primary small">Save</button>
-      <p id="backup-schedule-note" class="muted small schedule-note" role="status" aria-live="polite"></p>
-    </form>
+    {{ schedule_form() }}
     <table class="grid" id="backups-table">
       <thead>
         <tr>
