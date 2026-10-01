@@ -82,6 +82,11 @@
     backupScheduleNote: document.getElementById("backup-schedule-note"),
     backupScheduleSave: document.getElementById("btn-backup-schedule-save"),
     restoreDialog: document.getElementById("restore-dialog"),
+    backupDeleteDialog: document.getElementById("backup-delete-dialog"),
+    backupDeleteName: document.getElementById("backup-delete-dialog-name"),
+    backupDeleteDetail: document.getElementById("backup-delete-dialog-detail"),
+    backupDeleteConfirm: document.getElementById("btn-backup-delete-confirm"),
+    backupDeleteCancel: document.getElementById("btn-backup-delete-cancel"),
     restoreName: document.getElementById("restore-dialog-name"),
     restoreDetail: document.getElementById("restore-dialog-detail"),
     restoreChoice: document.querySelector(".restore-choice"),
@@ -513,9 +518,11 @@
 
     var world = document.createElement("td");
     world.className = "backup-world";
-    // The game's own archives are named by timestamp, not by world, so the server
-    // sends no world for them rather than inventing one.
-    world.textContent = backup.world || "—";
+    // The game's own archives are named by timestamp, not by world, and one can hold
+    // several worlds. The server reads which from the archive's file list and sends
+    // them as `contains`; when it could name none, the cell says so rather than
+    // inventing one.
+    world.textContent = backup.world || backupContents(backup) || "—";
     row.appendChild(world);
 
     var taken = document.createElement("td");
@@ -550,9 +557,9 @@
       remove.setAttribute("data-backup-delete", backup.name);
       action.appendChild(remove);
     }
-    // No note where Delete would be: the "Game server" tag in the By column already
-    // says whose it is, and a second explanation beside the button read as a caption
-    // for the Restore next to it.
+    // Every row gets Delete, the game server's own archives included: the image only
+    // prunes those when it takes a new one, so on a server that has been off they stay
+    // until someone removes them. The click asks first -- see askBackupDelete.
     row.appendChild(action);
     return row;
   }
@@ -773,9 +780,17 @@
       }
       var remove = target.closest("button[data-backup-delete]");
       if (remove && !remove.disabled) {
-        backupAction("/api/backups/delete", { name: remove.getAttribute("data-backup-delete") });
+        askBackupDelete(remove.getAttribute("data-backup-delete"));
       }
     });
+
+    if (el.backupDeleteDialog) {
+      el.backupDeleteConfirm.addEventListener("click", confirmBackupDelete);
+      el.backupDeleteCancel.addEventListener("click", closeBackupDelete);
+      el.backupDeleteDialog.addEventListener("close", function () {
+        pendingBackupDelete = null;
+      });
+    }
 
     el.restoreAsNew.addEventListener("change", syncRestoreChoice);
     el.restoreOverwrite.addEventListener("change", syncRestoreChoice);
@@ -799,6 +814,53 @@
   // The rows the table last drew, so the dialog can name what it is about to do
   // without asking the server again.
   var lastBackupRows = [];
+  // The worlds a game-server archive holds, as one line, or "" when none were named.
+  function backupContents(backup) {
+    var contains = backup && backup.contains;
+    return contains && contains.length ? contains.join(", ") : "";
+  }
+
+  // The archive the delete dialog is asking about. Read on confirm rather than bound to
+  // the button, so a refresh that rebuilds the table underneath an open dialog cannot
+  // retarget it at whatever row now sits in that position.
+  var pendingBackupDelete = null;
+
+  function askBackupDelete(name) {
+    var backup = findBackupRow(name);
+    if (!backup) { return; }
+    var worlds = backup.world || backupContents(backup);
+    var detail = formatTaken(backup.taken_at) + (backup.size ? " · " + backup.size : "") +
+      (worlds ? " · holds " + worlds : "");
+    pendingBackupDelete = backup.name;
+    if (el.backupDeleteDialog && el.backupDeleteDialog.showModal) {
+      el.backupDeleteName.textContent = backup.name;
+      el.backupDeleteDetail.textContent = detail;
+      el.backupDeleteDialog.showModal();
+    } else if (window.confirm(
+        "Delete the backup " + backup.name + " (" + detail + ") for good? " +
+        "This cannot be undone from here.")) {
+      // No <dialog> support: still ask, never delete straight off a click.
+      confirmBackupDelete();
+    } else {
+      // Declined. A backup left pending is one a later confirm would delete without
+      // ever having been asked about.
+      pendingBackupDelete = null;
+    }
+  }
+
+  function confirmBackupDelete() {
+    var name = pendingBackupDelete;
+    closeBackupDelete();
+    if (name) { backupAction("/api/backups/delete", { name: name }); }
+  }
+
+  function closeBackupDelete() {
+    pendingBackupDelete = null;
+    if (el.backupDeleteDialog && el.backupDeleteDialog.close && el.backupDeleteDialog.open) {
+      el.backupDeleteDialog.close();
+    }
+  }
+
   function findBackupRow(name) {
     for (var i = 0; i < lastBackupRows.length; i++) {
       if (lastBackupRows[i].name === name) { return lastBackupRows[i]; }

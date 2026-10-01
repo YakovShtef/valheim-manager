@@ -4,8 +4,10 @@ Three different things write archives into ``/config/backups`` and they are not
 interchangeable:
 
 * the **game image**, hourly, as ``worlds-*.zip`` and ``AUTOBACKUP-*``. It prunes
-  these itself by age (``BACKUPS_MAX_AGE``, three days by default) and does not
-  recurse. They are a short-term safety net and they are not the manager's to touch.
+  these by age (``BACKUPS_MAX_AGE``, three days by default) and does not recurse --
+  but only as part of taking a new one, so a server that has not run for a while
+  keeps them: a live one was seen holding archives two weeks past the limit. One
+  archive holds the whole worlds folder, so it is named by time, not by world.
 * the **Backup button**, as ``MANUAL-<world>-<stamp>.zip``. Outside the image's
   patterns on purpose, so a backup somebody took deliberately never evaporates on
   anyone's timer -- this one included.
@@ -16,7 +18,8 @@ interchangeable:
 
 So the rule this module enforces is narrow and worth stating once: **retention only
 ever deletes SCHEDULED- archives, and only for the world it just backed up.** A
-manual backup and the image's own backups are read, listed, and otherwise left alone.
+manual backup and the image's own backups are never removed on anyone's timer; the
+operator can delete any of them from the panel, one at a time, after being asked.
 
 Restoring reuses the upload path wholesale -- ``members_from_zip``, ``plan_upload``,
 ``WorldStore.place`` -- rather than growing a second way to write a world. A restore
@@ -50,6 +53,7 @@ from .worlds import (
     members_from_zip,
     plan_upload,
     sanitised_name,
+    world_names_in,
 )
 
 log = logging.getLogger("valheim_manager")
@@ -59,7 +63,8 @@ KIND_MANUAL = "manual"
 KIND_SCHEDULED = "scheduled"
 # Everything else in the folder, which in practice means the game's own hourly
 # archives. Listed so the panel can show them -- they are the backups an operator is
-# most likely to want after a crash -- but never deleted or pruned by the manager.
+# most likely to want after a crash. Never pruned by the manager; deleted only when
+# the operator asks.
 KIND_GAME = "game"
 
 _PREFIXES = {BACKUP_PREFIX: KIND_MANUAL, SCHEDULED_PREFIX: KIND_SCHEDULED}
@@ -154,6 +159,10 @@ class BackupEntry:
     kind: str
     size_bytes: int
     taken_at: float
+    # The worlds inside a game archive, read from its file list, for the panel to
+    # show. Empty for the manager's own archives, which carry their world in `world`,
+    # and for anything that cannot be read. Display only: restore never uses it.
+    contains: tuple[str, ...] = ()
 
     @property
     def size(self) -> str:
@@ -178,9 +187,11 @@ class BackupEntry:
             "size": self.size,
             "taken_at": self.taken_at,
             "restorable": self.restorable,
-            # Whose to delete. The game prunes its own by age and the manager has no
-            # business racing it, so those rows get no Delete either.
-            "deletable": self.kind in (KIND_MANUAL, KIND_SCHEDULED),
+            "contains": list(self.contains),
+            # Every row, the game's own included. The image prunes its archives only
+            # when it takes a new one, so on a server that has been off they stay
+            # until someone removes them -- and that someone needs a button.
+            "deletable": True,
         }
 
 
@@ -397,6 +408,9 @@ class BackupStore:
             except OSError:  # pragma: no cover - vanished mid-scan
                 continue
             kind, world = self._classify(entry.name)
+            contains: tuple[str, ...] = ()
+            if kind == KIND_GAME and entry.name.lower().endswith(".zip"):
+                contains = self._worlds_inside(Path(entry.path))
             entries.append(
                 BackupEntry(
                     name=entry.name,
@@ -404,10 +418,26 @@ class BackupStore:
                     kind=kind,
                     size_bytes=stat_result.st_size,
                     taken_at=stat_result.st_mtime,
+                    contains=contains,
                 )
             )
         entries.sort(key=lambda item: (-item.taken_at, item.name))
         return entries
+
+    @staticmethod
+    def _worlds_inside(path: Path) -> tuple[str, ...]:
+        """Which worlds a game archive holds, from its file list alone.
+
+        Only the zip's central directory is read; nothing is extracted. An archive
+        that cannot be read -- corrupt, truncated, or carrying an entry the upload
+        path refuses -- lists as holding nothing nameable rather than failing the
+        whole list, because it is still a file the operator may want to delete.
+        """
+        try:
+            with zipfile.ZipFile(path) as archive:
+                return world_names_in(members_from_zip(archive))
+        except (zipfile.BadZipFile, OSError, ValueError, WorldError):
+            return ()
 
     @staticmethod
     def _classify(filename: str) -> tuple[str, str]:
@@ -445,22 +475,17 @@ class BackupStore:
     # ----------------------------------------------------------------- deleting
 
     def delete(self, name: str) -> BackupEntry:
-        """Remove one archive the manager made. Returns what went.
+        """Remove one archive from the backups folder. Returns what went.
 
-        Refuses anything it did not write. The game prunes its own backups by age and
-        racing it is not the manager's job, and a name that resolves outside the
-        folder is not a backup at all.
+        The game's own archives included: the image prunes them only when it takes a
+        new one, so they can outlive ``BACKUPS_MAX_AGE`` indefinitely, and a row the
+        operator can see but not remove is the panel failing at its one job. A name
+        that resolves outside the folder, or a link, is still not a backup at all.
         """
         entry = self.find(name)
         if entry is None:
             raise BackupError(
                 f"There is no backup called {name!r} any more. Refresh the list."
-            )
-        if entry.kind == KIND_GAME:
-            raise BackupError(
-                f"{entry.name} is one of the game server's own backups. The game "
-                "manages those itself -- it removes them after a few days -- so the "
-                "dashboard will not delete it."
             )
         target = self._resolved(entry.name)
         try:

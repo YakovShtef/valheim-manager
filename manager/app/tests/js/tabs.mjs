@@ -721,6 +721,103 @@ check("saving_posts_both_the_mode_and_the_time", async () => {
   eq(post.body.interval_hours, 24, "the interval carried alongside it");
 });
 
+// -------------------------------------------- the game server's own backups
+//
+// The image zips the whole worlds folder, so its archives are named by time and can
+// hold several worlds. The row names what is inside; Delete asks before it removes
+// anything, for these and for the manager's own archives alike.
+
+const GAME_BACKUP = (over = {}) => ({
+  name: "worlds-20260916-1041.zip", world: "", kind: "game", size_bytes: 5000000,
+  size: "4.8 MB", taken_at: 1789550460, restorable: true, deletable: true,
+  contains: ["kaki", "Kakui"], ...over,
+});
+
+const withBackups = (backups) => {
+  const p = makePage();
+  p.backupPosts = [];
+  p.win.fetch = (path, init) => {
+    const url = String(path);
+    p.fetches.push(url);
+    if (init && init.method === "POST") {
+      let body = null;
+      try { body = JSON.parse(init.body); } catch (err) { body = null; }
+      p.backupPosts.push({ path: url, body });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        schedule: SCHEDULE(), backups, error: "", loaded_world: "Dedicated",
+      }),
+    });
+  };
+  p.doc.getElementById("btn-backups-refresh").click();
+  return p;
+};
+
+check("a_game_backup_row_names_the_worlds_it_holds", async () => {
+  const p = withBackups([
+    GAME_BACKUP(),
+    GAME_BACKUP({ name: "worlds-20260914-1216.zip", contains: [] }),
+    GAME_BACKUP({ name: "SCHEDULED-Kakui-20260925-012200.zip", world: "Kakui",
+                  kind: "scheduled", contains: [] }),
+  ]);
+  await settled();
+  const cells = [...p.doc.querySelectorAll("#backups-body .backup-world")]
+    .map((cell) => cell.textContent);
+  eq(cells, ["kaki, Kakui", "—", "Kakui"], "the world column");
+});
+
+check("a_game_backup_offers_delete", async () => {
+  const p = withBackups([GAME_BACKUP()]);
+  await settled();
+  const remove = p.doc.querySelector(
+    'button[data-backup-delete="worlds-20260916-1041.zip"]');
+  eq(!!remove, true, "a game-server backup has no Delete button");
+});
+
+check("a_backup_is_never_deleted_straight_off_the_click", async () => {
+  // jsdom has no <dialog>, so this drives the fallback, which any browser without
+  // <dialog> takes too. The rule is the same either way: Delete asks first.
+  const p = withBackups([GAME_BACKUP()]);
+  await settled();
+  eq(typeof p.doc.getElementById("backup-delete-dialog").showModal, "undefined",
+     "precondition: this environment has no <dialog>, so the fallback is under test");
+
+  const asked = [];
+  p.win.confirm = (text) => { asked.push(text); return false; };
+  p.doc.querySelector('button[data-backup-delete="worlds-20260916-1041.zip"]').click();
+  await settled();
+  eq(asked.length, 1, "Delete did not ask anything");
+  eq(asked[0].indexOf("worlds-20260916-1041.zip") !== -1, true,
+     "the question does not name the archive: " + asked[0]);
+  eq(asked[0].indexOf("Kakui") !== -1, true,
+     "the question does not say which worlds go with it: " + asked[0]);
+  eq(p.backupPosts, [], "saying no still deleted the backup");
+
+  p.win.confirm = () => true;
+  p.doc.querySelector('button[data-backup-delete="worlds-20260916-1041.zip"]').click();
+  await settled();
+  eq(p.backupPosts, [{ path: "/api/backups/delete",
+                       body: { name: "worlds-20260916-1041.zip" } }],
+     "confirming did not send exactly one delete for that archive");
+});
+
+check("the_backup_delete_dialog_is_wired_for_browsers_that_have_it", async () => {
+  const p = makePage();
+  const dialog = p.doc.getElementById("backup-delete-dialog");
+  eq(!!dialog, true, "there is no backup delete dialog in the page");
+  eq(dialog.hasAttribute("open"), false, "the dialog ships open");
+  const cancel = p.doc.getElementById("btn-backup-delete-cancel");
+  const confirm = p.doc.getElementById("btn-backup-delete-confirm");
+  eq(!!cancel && !!confirm, true, "the dialog is missing a button");
+  eq(cancel.hasAttribute("autofocus"), true, "Cancel is not what focus lands on");
+  eq(confirm.hasAttribute("autofocus"), false, "the destructive button takes focus");
+  eq(confirm.className.indexOf("danger") !== -1, true,
+     "the destructive button is not marked as one");
+});
+
 // ------------------------------------------------------------ the players tab
 //
 // The roster is fed by /api/players, read once when the page loads, so every case

@@ -204,9 +204,21 @@ Two things make it different from the automatic ones:
   off; this one doesn't, because it only reads the world and writes somewhere else.
   What you get is a copy of whatever the server last saved to disk — same as the
   game's own hourly backup.
-- **It's never deleted on a timer.** The game prunes its own backups after
-  `BACKUPS_MAX_AGE` days (3 by default), but only files matching its own naming. A
-  `MANUAL-` one falls outside that, so it stays until you remove it yourself.
+- **It's never deleted on a timer.** Each time the game takes one of its own hourly
+  backups, it removes its own ones older than `BACKUPS_MAX_AGE` days (3 by default),
+  but only files matching its own naming. A `MANUAL-` one falls outside that, so it
+  stays until you remove it yourself.
+
+### The backups list
+
+The **Backups** card under the worlds lists every backup on the server, with who made
+it: **You** (the Backup button), **Automatic** (the dashboard's own timer) or
+**Game server** (the game's hourly ones). A game-server backup is a copy of the whole
+worlds folder, so the World column shows every world inside it.
+
+Any of them can be deleted, and any `.zip` one restored. Delete always asks first, naming
+the backup and the worlds it holds. The game only clears out its old backups when it takes a
+new one, so if the server has been off for a while, old ones stay until you delete them.
 
 If the zip can't be finished for any reason, nothing is left behind that looks like a
 backup — the archive is built under a temporary name and only renamed once complete.

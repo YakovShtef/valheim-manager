@@ -1063,6 +1063,39 @@ def plan_upload(
     return UploadPlan(name=name, layout=layout, items=items, base=base)
 
 
+def world_names_in(members: Sequence[Member]) -> tuple[str, ...]:
+    """The worlds an archive holds, by name -- for showing, not for restoring.
+
+    The game's own hourly backup is a zip of the whole worlds folder, so one archive
+    can hold several worlds and its file name says only when it was taken. Its file
+    list says what is in it: a 1.0 world is named by the folder its ``_main.N.db2``
+    sits in, and a pre-1.0 world by a ``.db`` with a matching ``.fwl`` beside it.
+
+    Anything that cannot be named honestly is left out rather than guessed at: a
+    ``_main.N.db2`` with no folder around it, and half a legacy pair. Valheim's own
+    ``.db.old`` copies end in ``.old``, so they never look like a world here.
+    """
+    named: dict[str, str] = {}
+    legacy: dict[tuple[str, str], dict[str, str]] = {}
+    for member in members:
+        folder, _, leaf = member.path.rpartition("/")
+        if _MAIN_DB2_RE.match(leaf):
+            world = folder.rsplit("/", 1)[-1]
+            if world:
+                named.setdefault(world.lower(), world)
+            continue
+        stem, dot, extension = leaf.rpartition(".")
+        if dot and stem and extension.lower() in ("db", "fwl"):
+            pair = legacy.setdefault((folder.lower(), stem.lower()), {})
+            pair.setdefault(extension.lower(), stem)
+    for pair in legacy.values():
+        if "db" in pair and "fwl" in pair:
+            # The `.db` holds the save data, so its spelling names the world, as it
+            # does in `_classify`.
+            named.setdefault(pair["db"].lower(), pair["db"])
+    return tuple(sorted(named.values(), key=str.lower))
+
+
 def _strip_common_root(members: list[Member]) -> tuple[list[Member], str]:
     """Peel off wrapper directories, returning the innermost one that was peeled.
 
@@ -1169,6 +1202,7 @@ __all__ = [
     "unloadable_reason",
     "members_from_parts",
     "members_from_zip",
+    "world_names_in",
     "opened_upload",
     "plan_upload",
     "sanitised_name",

@@ -499,6 +499,25 @@
       <button type="button" id="btn-restore-confirm" class="primary">Restore</button>
     </div>
   </dialog>
+
+  {# Deleting a backup removes the only copy of the world as it was at that moment, and
+     one of the game server's own archives can hold several worlds at once -- so this
+     asks first and names both the archive and what is inside it. #}
+  <dialog id="backup-delete-dialog" class="confirm" aria-labelledby="backup-delete-dialog-title">
+    <h2 id="backup-delete-dialog-title">Delete this backup?</h2>
+    <p class="confirm-subject">
+      <strong id="backup-delete-dialog-name"></strong>
+      <span id="backup-delete-dialog-detail" class="muted small"></span>
+    </p>
+    <p class="banner banner-error">
+      This removes the backup from the server for good, and the dashboard cannot bring
+      it back. The worlds themselves are not touched &mdash; only this saved copy of them.
+    </p>
+    <div class="controls">
+      <button type="button" id="btn-backup-delete-cancel" class="ghost" autofocus>Cancel</button>
+      <button type="button" id="btn-backup-delete-confirm" class="danger">Delete forever</button>
+    </div>
+  </dialog>
 </div>
 
 {# Mods belong to a world, not to the server: BepInEx has one plugins folder, so

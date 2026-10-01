@@ -1604,9 +1604,9 @@ def create_app(
 
     # ------------------------------------------------------------------ backups
     #
-    # Listing, deleting, restoring, and the timer's settings. Deleting and restoring
-    # go through BackupStore, which will only ever touch archives the manager wrote
-    # -- the game prunes its own by age and racing it is not the manager's job.
+    # Listing, deleting, restoring, and the timer's settings. All of it goes through
+    # BackupStore. Its timer only ever prunes the manager's own SCHEDULED- archives;
+    # anything else, the game's own included, is deleted only when the operator asks.
 
     def _backups_panel(
         *, error: str = "", message: str = "", warning: str = ""

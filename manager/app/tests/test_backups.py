@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from app.backups import (
     DEFAULT_INTERVAL_HOURS,
+    KIND_GAME,
     MODE_DAILY,
     MODE_INTERVAL,
     BackupError,
@@ -538,3 +539,129 @@ def test_the_backup_timer_and_the_player_watcher_start_independently(
 
     assert backup_started is backup_dir_present
     assert watcher_started is players_dir_present
+
+
+# ------------------------------------------------- the game server's own archives
+#
+# The image zips the whole worlds folder every hour, so its archives are named by
+# time, not by world, and one archive can hold several worlds. They used to be listed
+# with no world and no Delete, on the promise that the image prunes them by age. On a
+# live server that promise did not hold -- archives sat two weeks past
+# BACKUPS_MAX_AGE -- which left rows nobody could identify or remove.
+
+
+def _game_archive(backup_store, name, members):
+    path = backup_store.root / name
+    with zipfile.ZipFile(path, "w") as archive:
+        for member in members:
+            archive.writestr(member, b"x")
+    return path
+
+
+def test_a_game_archive_names_the_world_it_holds(backup_store):
+    _game_archive(
+        backup_store,
+        "worlds-20260916-1041.zip",
+        ["worlds_local/Kakui/_main.1.db2", "worlds_local/Kakui/_main.1.fwl2"],
+    )
+
+    (entry,) = backup_store.entries()
+
+    assert entry.kind == KIND_GAME
+    assert entry.contains == ("Kakui",)
+    # The restore path still names its result from `world`, which stays empty for an
+    # archive the manager did not name -- showing what is inside changes nothing there.
+    assert entry.world == ""
+
+
+def test_a_game_archive_names_every_world_it_holds(backup_store):
+    _game_archive(
+        backup_store,
+        "worlds-20260915-2340.zip",
+        [
+            "worlds_local/Kakui/_main.1.db2",
+            "worlds_local/Kakui/_main.1.fwl2",
+            "worlds_local/kaki.db",
+            "worlds_local/kaki.fwl",
+            # Valheim's own previous-save copies, not worlds of their own.
+            "worlds_local/kaki.db.old",
+            "worlds_local/kaki.fwl.old",
+        ],
+    )
+
+    (entry,) = backup_store.entries()
+
+    assert entry.contains == ("kaki", "Kakui")
+
+
+def test_half_a_legacy_pair_is_not_named(backup_store):
+    """A `.db` with no `.fwl` is not a world, and naming it would invent one."""
+    _game_archive(backup_store, "worlds-20260914-1216.zip", ["worlds_local/kaki.db"])
+
+    (entry,) = backup_store.entries()
+
+    assert entry.contains == ()
+
+
+def test_an_unreadable_game_archive_still_lists(backup_store):
+    """A corrupt archive is still a file the operator may want to delete."""
+    (backup_store.root / "worlds-20260914-1316.zip").write_bytes(b"not a zip at all")
+
+    (entry,) = backup_store.entries()
+
+    assert entry.contains == ()
+    assert entry.as_dict()["deletable"] is True
+
+
+def test_a_game_archive_is_offered_for_deletion(backup_store):
+    _game_archive(
+        backup_store,
+        "worlds-20260916-1041.zip",
+        ["worlds_local/Kakui/_main.1.db2", "worlds_local/Kakui/_main.1.fwl2"],
+    )
+
+    listed = backup_store.entries()[0].as_dict()
+
+    assert listed["deletable"] is True
+    assert listed["contains"] == ["Kakui"]
+
+
+def test_a_game_archive_can_be_deleted(backup_store):
+    path = _game_archive(
+        backup_store,
+        "worlds-20260916-1041.zip",
+        ["worlds_local/Kakui/_main.1.db2", "worlds_local/Kakui/_main.1.fwl2"],
+    )
+
+    gone = backup_store.delete(path.name)
+
+    assert gone.kind == KIND_GAME
+    assert not path.exists()
+
+
+def test_a_loose_game_backup_file_can_be_deleted(backup_store):
+    """The image also writes some backups as loose files; those are removable too."""
+    loose = backup_store.root / "AUTOBACKUP-kaki.db"
+    loose.write_bytes(b"x")
+
+    backup_store.delete(loose.name)
+
+    assert not loose.exists()
+
+
+def test_deleting_a_game_archive_over_the_api(backups_client, world_store):
+    backups_root = world_store.backups_dir
+    path = backups_root / "worlds-20260916-1041.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("worlds_local/Kakui/_main.1.db2", b"x")
+        archive.writestr("worlds_local/Kakui/_main.1.fwl2", b"x")
+
+    listed = backups_client.get("/api/backups").json()["backups"]
+    assert [row["contains"] for row in listed] == [["Kakui"]]
+
+    response = backups_client.post(
+        "/api/backups/delete", json={"name": path.name}, headers={"Origin": ORIGIN}
+    )
+
+    assert response.status_code == 200, response.text
+    assert not path.exists()
